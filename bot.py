@@ -19,11 +19,10 @@ ARG = timezone(timedelta(hours=-3))
 
 (REGISTRO_NOMBRE,
  LOTE_CLIENTE, LOTE_CAMPO, LOTE_LOTE,
- NUEVO_CLIENTE_NOMBRE,
- NUEVO_CAMPO_NOMBRE,
- NUEVO_LOTE_NOMBRE,
+ NUEVO_CLIENTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_LOTE_NOMBRE,
  CAMION_CHASIS, CAMION_ACOPLADO, CAMION_CAPACIDAD,
- NUEVO_CAMION_CHASIS, NUEVO_CAMION_ACOPLADO, NUEVO_CAMION_CAPACIDAD) = range(13)
+ NUEVO_CAMION_CHASIS, NUEVO_CAMION_ACOPLADO, NUEVO_CAMION_CAPACIDAD,
+ DESCARGA_KG) = range(14)
 
 def ahora():
     return datetime.now(ARG)
@@ -139,6 +138,26 @@ def teclado_destinos(destinos, kg, incluir_nuevo=True):
         botones.append([InlineKeyboardButton("🌾 Nuevo silobolsa", callback_data=f"dst_nuevo_silo_{kg}")])
     return InlineKeyboardMarkup(botones)
 
+def teclado_inicio(rol: str, sesion=None):
+    if rol in ("operario", "encargado"):
+        botones = [
+            [InlineKeyboardButton("📊 Resumen",           callback_data="menu_resumen"),
+             InlineKeyboardButton("📋 Descargas de hoy",  callback_data="menu_descargas")],
+            [InlineKeyboardButton("🚛 Camiones activos",  callback_data="menu_camiones"),
+             InlineKeyboardButton("🌾 Silos activos",     callback_data="menu_silos")],
+            [InlineKeyboardButton("➕ Registrar descarga", callback_data="menu_descarga")],
+            [InlineKeyboardButton("🔄 Cambiar lote",      callback_data="menu_nuevolote"),
+             InlineKeyboardButton("🚛 Nuevo camión",      callback_data="menu_nuevocamion")],
+            [InlineKeyboardButton("🌾 Nuevo silobolsa",   callback_data="menu_nuevosilo")],
+        ]
+    else:
+        botones = [
+            [InlineKeyboardButton("📊 Mi resumen",           callback_data="menu_resumen"),
+             InlineKeyboardButton("📋 Mis descargas de hoy", callback_data="menu_descargas")],
+            [InlineKeyboardButton("🌾 Mis silobolsas",       callback_data="menu_silos")],
+        ]
+    return InlineKeyboardMarkup(botones)
+
 def teclado_clientes():
     r = supabase.table("clientes").select("*").order("apellido").execute()
     botones = []
@@ -163,22 +182,31 @@ def teclado_lotes(campo_id: int):
     botones.append([InlineKeyboardButton("➕ Nuevo lote", callback_data="lote_nuevo")])
     return InlineKeyboardMarkup(botones), r.data or []
 
-def nombre_similar(nombre: str, lista: list, campo_nombre: str = "nombre", campo_apellido: str = "apellido") -> list:
+def nombre_similar(nombre: str, lista: list) -> list:
     nombre_lower = nombre.lower()
-    similares = []
+    similares    = []
     for item in lista:
-        n = f"{item.get(campo_nombre,'')} {item.get(campo_apellido,'')}".strip().lower()
-        palabras = nombre_lower.split()
-        if any(p in n for p in palabras if len(p) > 2):
+        n = f"{item.get('nombre','')} {item.get('apellido','')}".strip().lower()
+        palabras = [p for p in nombre_lower.split() if len(p) > 2]
+        if any(p in n for p in palabras):
             similares.append(item)
     return similares
 
+def teclado_roles():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👷 Operario de tolva",      callback_data="rol_operario")],
+        [InlineKeyboardButton("👤 Cliente / dueño granos", callback_data="rol_cliente")],
+        [InlineKeyboardButton("⚙️ Encargado del equipo",   callback_data="rol_encargado")],
+    ])
+
 # ── Herramientas Claude ──────────────────────────────────────
-def tool_descargas_hoy(chat_id: str) -> str:
+def tool_descargas_hoy(chat_id: str, cliente_id: int = None) -> str:
     desde = ahora().replace(hour=0, minute=0, second=0, microsecond=0)
-    r = (supabase.table("descargas")
+    q = (supabase.table("descargas")
          .select("kg, destino, created_at, camiones(patente_chasis,patente_acoplado), silobolsas(numero), lotes(nombre)")
-         .eq("chat_id", chat_id).gte("created_at", desde.isoformat()).order("created_at").execute())
+         .eq("chat_id", chat_id).gte("created_at", desde.isoformat()).order("created_at"))
+    if cliente_id: q = q.eq("cliente_id", cliente_id)
+    r = q.execute()
     if not r.data: return "No hay descargas hoy."
     lineas = [f"📋 *Descargas de hoy* ({len(r.data)})\n"]
     total  = 0
@@ -191,21 +219,34 @@ def tool_descargas_hoy(chat_id: str) -> str:
     lineas.append(f"\nTotal: *{total:,.0f} kg*")
     return "\n".join(lineas)
 
-def tool_camiones_del_dia(chat_id: str) -> str:
-    desde = ahora().replace(hour=0, minute=0, second=0, microsecond=0)
+def tool_camiones_activos(chat_id: str) -> str:
     r = (supabase.table("descargas").select("camion_id, kg, camiones(patente_chasis,patente_acoplado,capacidad_kg)")
-         .eq("chat_id", chat_id).eq("destino", "camion").gte("created_at", desde.isoformat()).execute())
-    if not r.data: return "No pasó ningún camión hoy."
+         .eq("chat_id", chat_id).eq("destino", "camion").execute())
+    if not r.data: return "No hay camiones activos."
     camiones = {}
     for d in r.data:
         cid = d["camion_id"]; c = d.get("camiones") or {}
         if cid not in camiones:
             camiones[cid] = {"chasis": c.get("patente_chasis","?"), "acoplado": c.get("patente_acoplado","?"), "capacidad": c.get("capacidad_kg"), "kg": 0}
         camiones[cid]["kg"] += float(d["kg"])
-    lineas = [f"🚛 *Camiones de hoy* ({len(camiones)})\n"]
-    for v in camiones.values():
-        cap_str = f" / {v['capacidad']:,.0f} kg" if v["capacidad"] else ""
-        lineas.append(f"{v['chasis']} / {v['acoplado']} — *{v['kg']:,.0f} kg*{cap_str}")
+    activos = {cid: v for cid, v in camiones.items() if v["capacidad"] is None or v["kg"] < v["capacidad"]}
+    if not activos: return "No hay camiones con espacio disponible."
+    lineas = [f"🚛 *Camiones activos* ({len(activos)})\n"]
+    for v in activos.values():
+        faltan_str = f" — faltan *{v['capacidad']-v['kg']:,.0f} kg*" if v["capacidad"] else ""
+        lineas.append(f"{v['chasis']} / {v['acoplado']} — *{v['kg']:,.0f} kg*{faltan_str}")
+    return "\n".join(lineas)
+
+def tool_silos_activos(chat_id: str, lote_id: int = None, cliente_id: int = None) -> str:
+    q = supabase.table("silobolsas").select("*, lotes(nombre, campos(nombre))")
+    if lote_id: q = q.eq("lote_id", lote_id)
+    r = q.execute()
+    if not r.data: return "No hay silobolsas registrados."
+    lineas = ["🌾 *Silobolsas*\n"]
+    for s in r.data:
+        kg = sum(float(d["kg"]) for d in (supabase.table("descargas").select("kg").eq("silobolsa_id", s["id"]).execute().data or []))
+        lote  = (s.get("lotes") or {}).get("nombre","?")
+        lineas.append(f"Silo #{s['numero']} ({lote}) — *{kg:,.0f} kg*")
     return "\n".join(lineas)
 
 def tool_resumen_periodo(chat_id: str, periodo: str, cliente_id: int = None) -> str:
@@ -221,7 +262,8 @@ def tool_resumen_periodo(chat_id: str, periodo: str, cliente_id: int = None) -> 
     res = q.order("created_at", desc=True).execute()
     if not res.data: return f"Sin registros para {titulo}."
     total_kg = sum(float(r["kg"]) for r in res.data)
-    lineas   = [f"📊 *{titulo}*\n", f"Total: *{total_kg:,.0f} kg*",
+    lineas   = [f"📊 *{titulo}*\n",
+                f"Total: *{total_kg:,.0f} kg*",
                 f"Camiones: {len({r['camion_id'] for r in res.data if r['camion_id']})}  |  Silobolsas: {len({r['silobolsa_id'] for r in res.data if r['silobolsa_id']})}",
                 f"Descargas: {len(res.data)}\n"]
     clientes = {}
@@ -235,10 +277,7 @@ def tool_resumen_periodo(chat_id: str, periodo: str, cliente_id: int = None) -> 
 def tool_listar_clientes() -> str:
     r = supabase.table("clientes").select("*").order("apellido").execute()
     if not r.data: return "No hay clientes registrados."
-    lineas = ["👤 *Clientes registrados*\n"]
-    for c in r.data:
-        lineas.append(f"• {c['nombre']} {c['apellido']}")
-    return "\n".join(lineas)
+    return "👤 *Clientes registrados*\n\n" + "\n".join(f"{c['nombre']} {c['apellido']}" for c in r.data)
 
 def tool_estado_camion(patente: str, chat_id: str) -> str:
     patente = patente.upper().replace(" ", "")
@@ -257,8 +296,9 @@ def tool_estado_camion(patente: str, chat_id: str) -> str:
 
 TOOLS = [
     {"name": "descargas_hoy",    "description": "Muestra todas las descargas de hoy", "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "camiones_del_dia", "description": "Lista camiones que pasaron hoy",     "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "listar_clientes",  "description": "Lista todos los clientes registrados en el sistema", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "camiones_activos", "description": "Lista camiones activos con kg y espacio disponible", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "silos_activos",    "description": "Lista silobolsas con kg acumulados", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "listar_clientes",  "description": "Lista todos los clientes registrados", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "resumen_periodo",  "description": "Resumen de kg por período",
      "input_schema": {"type": "object", "properties": {"periodo": {"type": "string", "enum": ["hoy", "semana", "mes"]}}, "required": ["periodo"]}},
     {"name": "estado_camion",    "description": "Estado de un camión específico",
@@ -272,20 +312,25 @@ def consultar_claude_con_tools(mensaje: str, sesion, usuario, chat_id: str) -> s
         sesion_str  = (f"Cliente: {cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}, "
                        f"Campo: {(sesion.get('campos') or {}).get('nombre','')}, "
                        f"Lote: {(sesion.get('lotes') or {}).get('nombre','')}")
-    system = ("Sos el asistente de un sistema de tolvas agrícolas argentino. "
-              "Respondé siempre en español rioplatense, muy breve y sin bullets ni listas. "
-              "Cuando necesites datos reales usá las herramientas — nunca inventes datos. "
-              f"Sesión activa: {sesion_str}. Usuario: {usuario['nombre']} ({usuario['rol']}).")
+    system = (
+        "Sos el asistente de un sistema de tolvas agrícolas argentino. "
+        "Respondé en español, de forma directa y profesional, sin tuteos informales ni expresiones coloquiales. "
+        "Usá un tono claro y conciso, sin bullets ni listas. "
+        "Cuando necesites datos reales usá las herramientas — nunca inventes datos. "
+        f"Sesión activa: {sesion_str}. Usuario: {usuario['nombre']} ({usuario['rol']})."
+    )
     messages = [{"role": "user", "content": mensaje}]
     try:
         resp = claude.messages.create(model="claude-haiku-4-5", max_tokens=512, system=system, tools=TOOLS, messages=messages)
         while resp.stop_reason == "tool_use":
             tool_use = next(b for b in resp.content if b.type == "tool_use")
             inp      = tool_use.input
-            if tool_use.name == "descargas_hoy":       result = tool_descargas_hoy(chat_id)
-            elif tool_use.name == "camiones_del_dia":  result = tool_camiones_del_dia(chat_id)
+            cliente_id = usuario.get("cliente_id") if usuario and usuario["rol"] == "cliente" else None
+            if tool_use.name == "descargas_hoy":       result = tool_descargas_hoy(chat_id, cliente_id)
+            elif tool_use.name == "camiones_activos":  result = tool_camiones_activos(chat_id)
+            elif tool_use.name == "silos_activos":     result = tool_silos_activos(chat_id, cliente_id=cliente_id)
             elif tool_use.name == "listar_clientes":   result = tool_listar_clientes()
-            elif tool_use.name == "resumen_periodo":   result = tool_resumen_periodo(chat_id, inp.get("periodo","hoy"))
+            elif tool_use.name == "resumen_periodo":   result = tool_resumen_periodo(chat_id, inp.get("periodo","hoy"), cliente_id)
             elif tool_use.name == "estado_camion":     result = tool_estado_camion(inp.get("patente",""), chat_id)
             else:                                      result = "Herramienta no disponible."
             messages = messages + [
@@ -298,19 +343,91 @@ def consultar_claude_con_tools(mensaje: str, sesion, usuario, chat_id: str) -> s
         logging.error(f"Error Claude: {e}")
         return "No pude procesar eso. Intentá de nuevo."
 
-# ── Registro ─────────────────────────────────────────────────
-def teclado_roles():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👷 Operario de tolva",      callback_data="rol_operario")],
-        [InlineKeyboardButton("👤 Cliente / dueño granos", callback_data="rol_cliente")],
-        [InlineKeyboardButton("⚙️ Encargado del equipo",   callback_data="rol_encargado")],
-    ])
+# ── Menú inicio ──────────────────────────────────────────────
+async def mostrar_menu(update_or_msg, usuario, sesion=None, texto="¿Qué querés hacer?"):
+    teclado = teclado_inicio(usuario["rol"], sesion)
+    if hasattr(update_or_msg, 'reply_text'):
+        await update_or_msg.reply_text(texto, reply_markup=teclado)
+    else:
+        await update_or_msg.message.reply_text(texto, reply_markup=teclado)
 
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    await query.answer()
+    chat_id = str(update.effective_chat.id)
+    uid     = str(update.effective_user.id)
+    usuario = get_usuario(uid)
+    sesion  = get_sesion(chat_id)
+    data    = query.data.replace("menu_", "")
+
+    if data == "resumen":
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 Hoy",          callback_data="res_hoy"),
+             InlineKeyboardButton("📆 Esta semana",   callback_data="res_semana"),
+             InlineKeyboardButton("🗓 Este mes",      callback_data="res_mes")],
+            [InlineKeyboardButton("🚛 Por camión",    callback_data="res_tipo_camion"),
+             InlineKeyboardButton("🌾 Por silobolsa", callback_data="res_tipo_silo")],
+            [InlineKeyboardButton("👤 Por cliente",   callback_data="res_tipo_cliente"),
+             InlineKeyboardButton("🌱 Por lote",      callback_data="res_tipo_lote")],
+        ])
+        await query.edit_message_text("¿Qué resumen querés ver?", reply_markup=teclado)
+
+    elif data == "descargas":
+        cliente_id = usuario.get("cliente_id") if usuario["rol"] == "cliente" else None
+        await query.edit_message_text(tool_descargas_hoy(chat_id, cliente_id), parse_mode="Markdown")
+
+    elif data == "camiones":
+        await query.edit_message_text(tool_camiones_activos(chat_id), parse_mode="Markdown")
+
+    elif data == "silos":
+        lote_id    = sesion.get("lote_id") if sesion else None
+        cliente_id = usuario.get("cliente_id") if usuario["rol"] == "cliente" else None
+        await query.edit_message_text(tool_silos_activos(chat_id, lote_id, cliente_id), parse_mode="Markdown")
+
+    elif data == "descarga":
+        if not sesion or not sesion.get("lote_id"):
+            await query.edit_message_text("No hay sesión activa. Usá /nuevolote primero.")
+            return
+        destinos = get_destinos_abiertos(sesion["lote_id"], chat_id)
+        context.user_data["esperando_kg_para_destino"] = True
+        if destinos:
+            teclado = teclado_destinos(destinos, "?", incluir_nuevo=True)
+            await query.edit_message_text("¿A dónde va la descarga?", reply_markup=teclado)
+        else:
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚛 Nuevo camión",    callback_data="dst_nuevo_camion_?")],
+                [InlineKeyboardButton("🌾 Nuevo silobolsa", callback_data="dst_nuevo_silo_?")],
+            ])
+            await query.edit_message_text("¿A dónde va la descarga?", reply_markup=teclado)
+
+    elif data == "nuevolote":
+        await query.edit_message_text("Iniciando cambio de lote...")
+        await cmd_nuevolote(update, context)
+
+    elif data == "nuevocamion":
+        await query.edit_message_text("Iniciando registro de camión...")
+        await cmd_nuevocamion(update, context)
+
+    elif data == "nuevosilo":
+        await cmd_nuevosilo_desde_callback(query, chat_id, sesion)
+
+async def cmd_nuevosilo_desde_callback(query, chat_id, sesion):
+    if not sesion or not sesion.get("lote_id"):
+        await query.edit_message_text("No hay sesión activa. Usá /nuevolote primero.")
+        return
+    lote_id = sesion["lote_id"]
+    r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
+    numero  = (r.data[0]["numero"] + 1) if r.data else 1
+    supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
+    await query.edit_message_text(f"🌾 Silobolsa #{numero} abierto. Mandá las descargas.")
+
+# ── /start y registro ────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     if get_usuario(uid):
         u = get_usuario(uid)
-        await update.message.reply_text(f"Hola {u['nombre']}! Ya estás registrado como *{u['rol']}*.\nUsá /ayuda.", parse_mode="Markdown")
+        await update.message.reply_text(f"Hola {u['nombre']}!", parse_mode="Markdown")
+        await mostrar_menu(update.message, u, get_sesion(str(update.effective_chat.id)))
         return ConversationHandler.END
     await update.message.reply_text("Hola! Bienvenido al bot de tolvas.\n\n¿Quién sos?", reply_markup=teclado_roles())
     return REGISTRO_NOMBRE
@@ -329,10 +446,9 @@ async def recibir_nombre_registro(update: Update, context: ContextTypes.DEFAULT_
     rol    = context.user_data.get("rol", "operario")
     uid    = str(update.effective_user.id)
     supabase.table("usuarios").insert({"telegram_id": uid, "nombre": nombre, "rol": rol, "activo": True}).execute()
-    msgs = {"operario": "Mandame patente chasis, acoplado y kg.\nEj: `AB123CD XY456ZW 5400kg`",
-            "cliente":  "Podés pedirme el resumen de tus granos cuando quieras.",
-            "encargado": "Tenés acceso completo. Usá /ayuda para ver todo."}
-    await update.message.reply_text(f"✅ Bienvenido *{nombre}*! Quedaste registrado como *{rol}*.\n\n{msgs[rol]}", parse_mode="Markdown")
+    usuario = get_usuario(uid)
+    await update.message.reply_text(f"✅ Bienvenido *{nombre}*! Quedaste registrado como *{rol}*.", parse_mode="Markdown")
+    await mostrar_menu(update.message, usuario)
     return ConversationHandler.END
 
 # ── /ayuda ───────────────────────────────────────────────────
@@ -342,40 +458,34 @@ async def cmd_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not usuario:
         await update.message.reply_text("Primero registrate con /start.")
         return
-    if usuario["rol"] == "operario":
-        texto = ("🌾 *Comandos operario*\n\nDescarga a camión: `AB123CD XY456ZW 5400kg`\nDescarga a silo: `5400kg`\n\n"
-                 "/nuevolote — cambiar lote\n/nuevocamion — agregar camión\n/nuevosilo — abrir silobolsa\n/resumen — ver totales")
-    elif usuario["rol"] == "cliente":
-        texto = "📊 Usá /resumen para ver tus datos."
-    else:
-        texto = "⚙️ *Comandos encargado*\n\n/nuevolote — iniciar sesión\n/nuevocamion — agregar camión\n/nuevosilo — abrir silobolsa\n/resumen — ver totales"
-    await update.message.reply_text(texto, parse_mode="Markdown")
+    await mostrar_menu(update.message, usuario, get_sesion(str(update.effective_chat.id)), "¿Qué necesitás?")
 
 # ── /nuevolote ───────────────────────────────────────────────
 async def cmd_nuevolote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
     usuario = get_usuario(uid)
     if not usuario or usuario["rol"] not in ("operario", "encargado"):
-        await update.message.reply_text("Solo operarios y encargados pueden hacer esto.")
+        if update.message:
+            await update.message.reply_text("Solo operarios y encargados pueden hacer esto.")
         return ConversationHandler.END
     context.user_data.clear()
     teclado, clientes = teclado_clientes()
-    if clientes:
-        await update.message.reply_text("¿Para qué cliente es esta cosecha?", reply_markup=teclado)
+    msg = "¿Para qué cliente es esta cosecha?"
+    if update.callback_query:
+        await update.callback_query.message.reply_text(msg, reply_markup=teclado if clientes else None)
     else:
-        await update.message.reply_text("¿Para qué cliente es esta cosecha? (escribí el nombre)")
+        await update.message.reply_text(msg, reply_markup=teclado if clientes else None)
     return LOTE_CLIENTE
 
 async def lote_recibir_cliente_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto    = update.message.text.strip()
-    todos, _ = teclado_clientes()
     r        = supabase.table("clientes").select("*").execute()
     similares = nombre_similar(texto, r.data or [])
     if similares and not any(f"{c['nombre']} {c['apellido']}".lower() == texto.lower() for c in similares):
         botones = [[InlineKeyboardButton(f"{c['nombre']} {c['apellido']}", callback_data=f"cli_{c['id']}")] for c in similares]
         botones.append([InlineKeyboardButton("➕ No, crear nuevo", callback_data=f"cli_nuevo_nombre_{texto}")])
         await update.message.reply_text(
-            f"Encontré clientes parecidos a *{texto}* — ¿es alguno de estos?",
+            f"Encontré clientes similares a *{texto}* — ¿es alguno de estos?",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
         )
         return LOTE_CAMPO
@@ -385,15 +495,15 @@ async def lote_recibir_cliente_texto(update: Update, context: ContextTypes.DEFAU
     if r2.data and len(r2.data) == 1:
         context.user_data["cliente_id"]  = r2.data[0]["id"]
         context.user_data["cliente_str"] = f"{r2.data[0]['nombre']} {r2.data[0]['apellido']}"
-        teclado, campos = teclado_campos(r2.data[0]["id"])
+        teclado, _ = teclado_campos(r2.data[0]["id"])
         await update.message.reply_text(f"✅ *{context.user_data['cliente_str']}*\n\n¿En qué campo?", parse_mode="Markdown", reply_markup=teclado)
         return LOTE_CAMPO
     partes = texto.split()
     nuevo  = supabase.table("clientes").insert({"nombre": partes[0], "apellido": " ".join(partes[1:]) if len(partes) > 1 else ""}).execute()
     context.user_data["cliente_id"]  = nuevo.data[0]["id"]
     context.user_data["cliente_str"] = texto
-    await update.message.reply_text(f"Cliente *{texto}* creado.\n\n¿En qué campo?", parse_mode="Markdown",
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ Nuevo campo", callback_data="campo_nuevo")]]))
+    teclado, _ = teclado_campos(nuevo.data[0]["id"])
+    await update.message.reply_text(f"Cliente *{texto}* creado.\n\n¿En qué campo?", parse_mode="Markdown", reply_markup=teclado)
     return LOTE_CAMPO
 
 async def lote_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -417,7 +527,7 @@ async def lote_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE
     c   = r.data[0]
     context.user_data["cliente_id"]  = cid
     context.user_data["cliente_str"] = f"{c['nombre']} {c['apellido']}"
-    teclado, campos = teclado_campos(cid)
+    teclado, _ = teclado_campos(cid)
     await query.edit_message_text(f"✅ *{context.user_data['cliente_str']}*\n\n¿En qué campo?", parse_mode="Markdown", reply_markup=teclado)
     return LOTE_CAMPO
 
@@ -441,7 +551,7 @@ async def lote_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     campo_id = int(data.replace("campo_", ""))
     r        = supabase.table("campos").select("*").eq("id", campo_id).execute()
     context.user_data["campo_id"] = campo_id
-    teclado, lotes = teclado_lotes(campo_id)
+    teclado, _ = teclado_lotes(campo_id)
     await query.edit_message_text(f"✅ Campo *{r.data[0]['nombre']}*\n\n¿En qué lote?", parse_mode="Markdown", reply_markup=teclado)
     return LOTE_LOTE
 
@@ -463,18 +573,14 @@ async def lote_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return NUEVO_LOTE_NOMBRE
     lote_id = int(data.replace("lote_", ""))
     r       = supabase.table("lotes").select("*").eq("id", lote_id).execute()
-    await _finalizar_sesion(query.message.chat_id, lote_id, context, r.data[0]["nombre"], query)
+    await _finalizar_sesion(update.effective_chat.id, lote_id, context, r.data[0]["nombre"], query)
     return ConversationHandler.END
 
 async def nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto    = update.message.text.strip()
     campo_id = context.user_data["campo_id"]
     r        = supabase.table("lotes").select("*").eq("campo_id", campo_id).ilike("nombre", f"%{texto}%").execute()
-    if r.data:
-        lote_id = r.data[0]["id"]
-    else:
-        nuevo   = supabase.table("lotes").insert({"nombre": texto, "campo_id": campo_id}).execute()
-        lote_id = nuevo.data[0]["id"]
+    lote_id  = r.data[0]["id"] if r.data else supabase.table("lotes").insert({"nombre": texto, "campo_id": campo_id}).execute().data[0]["id"]
     await _finalizar_sesion(update.effective_chat.id, lote_id, context, texto, update)
     return ConversationHandler.END
 
@@ -504,10 +610,17 @@ async def cmd_nuevocamion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
     usuario = get_usuario(uid)
     if not usuario or usuario["rol"] not in ("operario", "encargado"):
-        await update.message.reply_text("Solo operarios y encargados pueden hacer esto.")
+        if update.message:
+            await update.message.reply_text("Solo operarios y encargados pueden hacer esto.")
         return ConversationHandler.END
-    context.user_data.clear()
-    await update.message.reply_text("¿Patente del *chasis*?", parse_mode="Markdown")
+    context.user_data.pop("patente_chasis", None)
+    context.user_data.pop("patente_acoplado", None)
+    context.user_data.pop("kg_pendiente", None)
+    msg = "¿Patente del *chasis*?"
+    if update.callback_query:
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(msg, parse_mode="Markdown")
     return NUEVO_CAMION_CHASIS
 
 async def nuevo_camion_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -536,11 +649,11 @@ async def nuevo_camion_capacidad(update: Update, context: ContextTypes.DEFAULT_T
     else:
         nuevo     = supabase.table("camiones").insert({"patente_chasis": chasis, "patente_acoplado": acoplado, "capacidad_kg": cap if cap > 0 else None}).execute()
         camion_id = nuevo.data[0]["id"]
-    sesion = get_sesion(chat_id)
+    sesion       = get_sesion(chat_id)
     destino_info = {"tipo": "camion", "id": camion_id, "label": f"🚛 {chasis} / {acoplado}", "capacidad": cap if cap > 0 else None}
     if kg_pend > 0 and sesion:
-        ts = ahora()
-        uid = str(update.effective_user.id)
+        ts      = ahora()
+        uid     = str(update.effective_user.id)
         usuario = get_usuario(uid)
         guardar_descarga(sesion, kg_pend, usuario, ts, destino_info)
         await update.message.reply_text(armar_confirmacion(sesion, kg_pend, destino_info, 0), parse_mode="Markdown")
@@ -568,23 +681,16 @@ async def cmd_resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not usuario:
         await update.message.reply_text("Primero registrate con /start.")
         return
-    args = " ".join(context.args).lower() if context.args else ""
-    if not args:
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📅 Hoy",         callback_data="res_hoy"),
-             InlineKeyboardButton("📆 Esta semana",  callback_data="res_semana"),
-             InlineKeyboardButton("🗓 Este mes",     callback_data="res_mes")],
-            [InlineKeyboardButton("🚛 Por camión",   callback_data="res_tipo_camion"),
-             InlineKeyboardButton("🌾 Por silobolsa", callback_data="res_tipo_silo")],
-            [InlineKeyboardButton("👤 Por cliente",  callback_data="res_tipo_cliente"),
-             InlineKeyboardButton("🌱 Por lote",     callback_data="res_tipo_lote")],
-        ])
-        await update.message.reply_text("¿Qué resumen querés ver?", reply_markup=teclado)
-        return
-    chat_id    = str(update.effective_chat.id)
-    periodo    = "mes" if "mes" in args else "semana" if "semana" in args else "hoy"
-    cliente_id = usuario.get("cliente_id") if usuario["rol"] == "cliente" else None
-    await update.message.reply_text(tool_resumen_periodo(chat_id, periodo, cliente_id), parse_mode="Markdown")
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Hoy",          callback_data="res_hoy"),
+         InlineKeyboardButton("📆 Esta semana",   callback_data="res_semana"),
+         InlineKeyboardButton("🗓 Este mes",      callback_data="res_mes")],
+        [InlineKeyboardButton("🚛 Por camión",    callback_data="res_tipo_camion"),
+         InlineKeyboardButton("🌾 Por silobolsa", callback_data="res_tipo_silo")],
+        [InlineKeyboardButton("👤 Por cliente",   callback_data="res_tipo_cliente"),
+         InlineKeyboardButton("🌱 Por lote",      callback_data="res_tipo_lote")],
+    ])
+    await update.message.reply_text("¿Qué resumen querés ver?", reply_markup=teclado)
 
 async def resumen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
@@ -593,17 +699,17 @@ async def resumen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
     usuario = get_usuario(uid)
     data    = query.data
+    cliente_id = usuario.get("cliente_id") if usuario and usuario["rol"] == "cliente" else None
     if data.startswith("res_tipo_"):
         tipo = data.replace("res_tipo_", "")
-        await query.edit_message_text(_resumen_por_tipo(chat_id, tipo), parse_mode="Markdown")
+        await query.edit_message_text(_resumen_por_tipo(chat_id, tipo, cliente_id), parse_mode="Markdown")
     else:
-        periodo    = data.replace("res_", "")
-        cliente_id = usuario.get("cliente_id") if usuario and usuario["rol"] == "cliente" else None
+        periodo = data.replace("res_", "")
         await query.edit_message_text(tool_resumen_periodo(chat_id, periodo, cliente_id), parse_mode="Markdown")
 
-def _resumen_por_tipo(chat_id: str, tipo: str) -> str:
+def _resumen_por_tipo(chat_id: str, tipo: str, cliente_id: int = None) -> str:
     desde = ahora().replace(hour=0, minute=0, second=0, microsecond=0)
-    if tipo == "camion": return tool_camiones_del_dia(chat_id)
+    if tipo == "camion": return tool_camiones_activos(chat_id)
     elif tipo == "silo":
         r = supabase.table("descargas").select("silobolsa_id, kg, silobolsas(numero)").eq("chat_id", chat_id).eq("destino", "silo").gte("created_at", desde.isoformat()).execute()
         if not r.data: return "No hay descargas a silobolsa hoy."
@@ -642,8 +748,41 @@ async def destino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ts      = query.message.date.astimezone(ARG)
     partes  = query.data.split("_")
 
+    # Destino seleccionado pero sin kg aún (viene del menú "Registrar descarga")
+    kg_raw = partes[3] if len(partes) > 3 else "0"
+    if kg_raw == "?":
+        # Guardar destino seleccionado y pedir kg
+        if partes[1] == "nuevo":
+            context.user_data["conv_state"]        = CAMION_CHASIS if partes[2] == "camion" else None
+            context.user_data["kg_pendiente"]      = 0
+            context.user_data["destino_pendiente"] = None
+            if partes[2] == "silo":
+                lote_id = sesion["lote_id"]
+                r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
+                numero  = (r.data[0]["numero"] + 1) if r.data else 1
+                nuevo   = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
+                context.user_data["destino_pendiente"] = {"tipo": "silo", "id": nuevo.data[0]["id"], "label": f"🌾 Silobolsa #{numero}", "capacidad": None}
+                await query.edit_message_text(f"🌾 Silobolsa #{numero} listo.\n\n¿Cuántos kg?")
+            else:
+                await query.edit_message_text("¿Patente del *chasis* del nuevo camión?", parse_mode="Markdown")
+        else:
+            tipo    = partes[1]
+            dest_id = int(partes[2])
+            if tipo == "camion":
+                r      = supabase.table("camiones").select("*").eq("id", dest_id).execute()
+                camion = r.data[0] if r.data else {}
+                context.user_data["destino_pendiente"] = {"tipo": "camion", "id": dest_id, "label": f"🚛 {camion.get('patente_chasis','')} / {camion.get('patente_acoplado','')}", "capacidad": camion.get("capacidad_kg")}
+            else:
+                r   = supabase.table("silobolsas").select("numero").eq("id", dest_id).execute()
+                num = r.data[0]["numero"] if r.data else "?"
+                context.user_data["destino_pendiente"] = {"tipo": "silo", "id": dest_id, "label": f"🌾 Silobolsa #{num}", "capacidad": None}
+            context.user_data["conv_state"] = DESCARGA_KG
+            await query.edit_message_text(f"Destino: *{context.user_data['destino_pendiente']['label']}*\n\n¿Cuántos kg?", parse_mode="Markdown")
+        return
+
+    kg = float(kg_raw)
+
     if partes[1] == "nuevo":
-        kg = float(partes[3]) if len(partes) > 3 and partes[3] != "0" else 0
         if partes[2] == "silo":
             lote_id = sesion["lote_id"]
             r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
@@ -655,7 +794,7 @@ async def destino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 guardar_descarga(sesion, kg, usuario, ts, destino_info)
                 await query.edit_message_text(armar_confirmacion(sesion, kg, destino_info, 0), parse_mode="Markdown")
             else:
-                await query.edit_message_text(f"🌾 Silobolsa #{numero} abierto. Mandá las descargas.")
+                await query.edit_message_text(f"🌾 Silobolsa #{numero} abierto.")
         else:
             context.user_data["kg_pendiente"] = kg
             context.user_data["conv_state"]   = CAMION_CHASIS
@@ -664,8 +803,6 @@ async def destino_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tipo    = partes[1]
     dest_id = int(partes[2])
-    kg      = float(partes[3])
-
     if tipo == "camion":
         r      = supabase.table("camiones").select("*").eq("id", dest_id).execute()
         camion = r.data[0] if r.data else {}
@@ -690,12 +827,14 @@ async def tolva_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 INTENCIONES_LOTE   = ["cambiar lote", "nuevo lote", "cambiar de lote", "otro lote", "nuevolote"]
 INTENCIONES_CAMION = ["cambiar camion", "nuevo camion", "otro camion", "nuevocamion", "agregar camion"]
 INTENCIONES_SILO   = ["nuevo silo", "otro silo", "silobolsa nuevo", "nuevosilo", "abrir silo"]
+INTENCIONES_RESUMEN = ["resumen", "totales", "cuanto llevamos", "cuánto llevamos", "ver total"]
 
 def detectar_intencion(texto: str):
     t = texto.lower()
-    if any(i in t for i in INTENCIONES_LOTE):   return "nuevolote"
-    if any(i in t for i in INTENCIONES_CAMION): return "nuevocamion"
-    if any(i in t for i in INTENCIONES_SILO):   return "nuevosilo"
+    if any(i in t for i in INTENCIONES_RESUMEN): return "resumen"
+    if any(i in t for i in INTENCIONES_LOTE):    return "nuevolote"
+    if any(i in t for i in INTENCIONES_CAMION):  return "nuevocamion"
+    if any(i in t for i in INTENCIONES_SILO):    return "nuevosilo"
     return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -712,6 +851,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Estado de conversación pendiente desde callback
     conv_state = context.user_data.get("conv_state")
+
+    if conv_state == DESCARGA_KG:
+        context.user_data["conv_state"] = None
+        kg           = parsear_kg(texto)
+        sesion       = get_sesion(chat_id)
+        destino_info = context.user_data.get("destino_pendiente")
+        if not kg:
+            await msg.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
+            context.user_data["conv_state"] = DESCARGA_KG
+            return
+        if not destino_info or not sesion:
+            await msg.reply_text("Hubo un error. Intentá de nuevo.")
+            return
+        acum = sum(float(d["kg"]) for d in (supabase.table("descargas").select("kg")
+              .eq("camion_id" if destino_info["tipo"]=="camion" else "silobolsa_id", destino_info["id"])
+              .execute().data or []))
+        guardar_descarga(sesion, kg, usuario, ts, destino_info)
+        await msg.reply_text(armar_confirmacion(sesion, kg, destino_info, acum), parse_mode="Markdown")
+        return
+
     if conv_state == CAMION_CHASIS:
         context.user_data["patente_chasis"] = re.sub(r'\s+', '', texto.upper().strip())
         context.user_data["conv_state"]     = CAMION_ACOPLADO
@@ -752,7 +911,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(respuesta, parse_mode="Markdown")
         return
 
+    # Saludos y mensajes generales → mostrar menú
+    saludos = ["hola", "buenas", "buen dia", "buenos dias", "buenas tardes", "buenas noches", "hey", "hi"]
+    if any(s in texto.lower() for s in saludos):
+        sesion = get_sesion(chat_id)
+        await mostrar_menu(msg, usuario, sesion, f"Hola {usuario['nombre']}!")
+        return
+
     intencion = detectar_intencion(texto)
+    if intencion == "resumen":
+        await cmd_resumen(update, context)
+        return
     if intencion == "nuevolote":
         await cmd_nuevolote(update, context)
         return
@@ -790,10 +959,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if destinos:
             if len(destinos) == 1:
                 d          = destinos[0]
-                faltan_str = f" — le faltan *{d['faltan']:,.0f} kg*" if d.get("faltan") else ""
+                faltan_str = f" — faltan *{d['faltan']:,.0f} kg*" if d.get("faltan") else ""
                 teclado    = InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"✅ Sí, a {d['label']}", callback_data=f"dst_{d['tipo']}_{d['id']}_{kg}")],
-                    [InlineKeyboardButton("❌ Otro destino", callback_data=f"dst_nuevo_camion_{kg}")],
+                    [InlineKeyboardButton("❌ Otro destino",         callback_data=f"dst_nuevo_camion_{kg}")],
                 ])
                 await msg.reply_text(f"Son *{kg:,.0f} kg* — ¿van a {d['label']}{faltan_str}?", parse_mode="Markdown", reply_markup=teclado)
             else:
@@ -827,14 +996,14 @@ if __name__ == "__main__":
     lote_conv = ConversationHandler(
         entry_points=[CommandHandler("nuevolote", cmd_nuevolote)],
         states={
-            LOTE_CLIENTE:      [CallbackQueryHandler(lote_elegir_cliente,  pattern="^cli_"),
-                                MessageHandler(filters.TEXT & ~filters.COMMAND, lote_recibir_cliente_texto)],
-            LOTE_CAMPO:        [CallbackQueryHandler(lote_elegir_campo,    pattern="^campo_"),
-                                CallbackQueryHandler(lote_elegir_cliente,  pattern="^cli_")],
+            LOTE_CLIENTE:         [CallbackQueryHandler(lote_elegir_cliente, pattern="^cli_"),
+                                   MessageHandler(filters.TEXT & ~filters.COMMAND, lote_recibir_cliente_texto)],
+            LOTE_CAMPO:           [CallbackQueryHandler(lote_elegir_campo,   pattern="^campo_"),
+                                   CallbackQueryHandler(lote_elegir_cliente, pattern="^cli_")],
             NUEVO_CLIENTE_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_cliente_nombre)],
             NUEVO_CAMPO_NOMBRE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_campo_nombre)],
-            LOTE_LOTE:         [CallbackQueryHandler(lote_elegir_lote,     pattern="^lote_")],
-            NUEVO_LOTE_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_lote_nombre)],
+            LOTE_LOTE:            [CallbackQueryHandler(lote_elegir_lote,    pattern="^lote_")],
+            NUEVO_LOTE_NOMBRE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_lote_nombre)],
         },
         fallbacks=[]
     )
@@ -852,6 +1021,7 @@ if __name__ == "__main__":
     app.add_handler(registro_conv)
     app.add_handler(lote_conv)
     app.add_handler(camion_conv)
+    app.add_handler(CallbackQueryHandler(menu_callback,    pattern="^menu_"))
     app.add_handler(CallbackQueryHandler(resumen_callback, pattern="^res_"))
     app.add_handler(CallbackQueryHandler(tolva_callback,   pattern="^dst_tolva$"))
     app.add_handler(CallbackQueryHandler(destino_callback, pattern="^dst_"))
