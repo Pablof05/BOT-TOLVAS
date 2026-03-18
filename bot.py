@@ -722,13 +722,17 @@ async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_T
     lote_id  = nuevo.data[0]["id"]
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = texto
+    iconos  = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
     botones = []
     for g in GRANOS:
-        botones.append([InlineKeyboardButton(f"{'🌾' if g=='Trigo' else '🌱' if g=='Soja' else '🌽' if g=='Maíz' else '🌻' if g=='Girasol' else '🧅'} {g}", callback_data=f"desc_grano_{g}")])
+        botones.append([InlineKeyboardButton(f"{iconos.get(g,'')} {g}", callback_data=f"desc_grano_{g}")])
     botones.append([InlineKeyboardButton("✏️ Otro", callback_data="desc_grano_otro")])
     botones.append([btn_cancelar()])
-    await update.message.reply_text(f"Lote *{texto}* creado.\n\n¿Qué grano se cosecha?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
-    return DESC_LOTE
+    await update.message.reply_text(
+        f"Lote *{texto}* creado.\n\n¿Qué grano se cosecha en este lote?",
+        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+    )
+    return DESC_GRANO_OTRO
 
 async def mostrar_granos(query):
     botones = []
