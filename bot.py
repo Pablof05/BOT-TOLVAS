@@ -331,7 +331,7 @@ async def add_cli_apellido(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = str(update.effective_user.id)
     # Obtener número de teléfono de Telegram si está disponible
-    tel_tg = update.effective_user.phone_number or ""
+    tel_tg = ""
 
     # Verificar si es contratista
     cont = get_contratista(uid)
