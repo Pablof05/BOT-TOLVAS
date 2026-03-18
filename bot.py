@@ -413,7 +413,7 @@ def consultar_claude(historial_msgs: list, contexto: str, mensaje_usuario: str) 
     mensajes = historial_msgs + [{"role": "user", "content": mensaje_usuario}]
     try:
         resp = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4-5",
             max_tokens=512,
             system=SYSTEM_PROMPT + f"\n\nCONTEXTO ACTUAL:\n{contexto}",
             messages=mensajes
