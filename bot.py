@@ -465,17 +465,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot corriendo...")
     app.run_polling()
-```
-
-3. Clic en **Commit changes** → **Commit changes**
-
----
-
-También necesitamos agregar `anthropic` al `requirements.txt`:
-
-4. Abrí **requirements.txt** → lápiz ✏️
-5. Reemplazá con:
-```
-python-telegram-bot==21.6
-supabase==2.7.4
-anthropic==0.25.0
