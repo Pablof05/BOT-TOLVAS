@@ -885,7 +885,10 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
     registro_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start)],
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CallbackQueryHandler(elegir_rol, pattern="^rol_"),
+        ],
         states={
             REGISTRO_NOMBRE: [
                 CallbackQueryHandler(elegir_rol, pattern="^rol_"),
@@ -920,11 +923,11 @@ if __name__ == "__main__":
     app.add_handler(lote_conv)
     app.add_handler(camion_conv)
     app.add_handler(CallbackQueryHandler(resumen_callback,  pattern="^res_"))
-    app.add_handler(CallbackQueryHandler(destino_callback,  pattern="^dst_"))
     app.add_handler(CallbackQueryHandler(tolva_callback,    pattern="^dst_tolva"))
-    app.add_handler(CommandHandler("ayuda",      cmd_ayuda))
-    app.add_handler(CommandHandler("resumen",    cmd_resumen))
-    app.add_handler(CommandHandler("nuevosilo",  cmd_nuevosilo))
+    app.add_handler(CallbackQueryHandler(destino_callback,  pattern="^dst_"))
+    app.add_handler(CommandHandler("ayuda",       cmd_ayuda))
+    app.add_handler(CommandHandler("resumen",     cmd_resumen))
+    app.add_handler(CommandHandler("nuevosilo",   cmd_nuevosilo))
     app.add_handler(CommandHandler("nuevocamion", cmd_nuevocamion))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
