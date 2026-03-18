@@ -420,11 +420,14 @@ def consultar_claude(historial_msgs: list, contexto: str, mensaje_usuario: str) 
         )
         texto = resp.content[0].text.strip()
         texto = re.sub(r'^```json\s*|\s*```$', '', texto, flags=re.MULTILINE).strip()
+        # Extraer solo el primer JSON válido
+        match = re.search(r'\{.*?\}', texto, re.DOTALL)
+        if match:
+            return json.loads(match.group())
         return json.loads(texto)
     except Exception as e:
         logging.error(f"Error Claude: {e}")
         return {"accion": "responder", "mensaje": "Hubo un error, intentá de nuevo."}
-
 # ── Handler principal ────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg     = update.message
