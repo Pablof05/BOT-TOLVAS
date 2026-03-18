@@ -1,25 +1,21 @@
-import os, re, logging
+import os, re, json, logging
 from datetime import datetime, timezone, timedelta
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import (ApplicationBuilder, MessageHandler, CommandHandler,
-                          ConversationHandler, filters, ContextTypes)
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from supabase import create_client
+import anthropic
 
-TOKEN        = os.environ["TELEGRAM_TOKEN"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+TOKEN         = os.environ["TELEGRAM_TOKEN"]
+SUPABASE_URL  = os.environ["SUPABASE_URL"]
+SUPABASE_KEY  = os.environ["SUPABASE_KEY"]
+ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+claude   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 logging.basicConfig(level=logging.INFO)
 ARG = timezone(timedelta(hours=-3))
 
-# ── Estados del ConversationHandler ─────────────────────────
-(ROL, NOMBRE,
- CLIENTE, CAMPO, LOTE,
- DESTINO, PATENTE_CHASIS, PATENTE_ACOPLADO, CAPACIDAD,
- NUEVO_CAMION_CHASIS, NUEVO_CAMION_ACOPLADO, NUEVO_CAMION_CAP) = range(12)
-
-# ── Helpers ──────────────────────────────────────────────────
+# ── Helpers BD ───────────────────────────────────────────────
 def ahora():
     return datetime.now(ARG)
 
@@ -35,591 +31,451 @@ def get_sesion(chat_id: str):
     ).eq("chat_id", chat_id).execute()
     return r.data[0] if r.data else None
 
-def barra(actual, total):
-    if not total:
-        return ""
-    pct = min(actual / total, 1.0)
-    llenos = int(pct * 20)
-    return "█" * llenos + "░" * (20 - llenos) + f" {pct*100:.0f}%"
+def get_historial(chat_id: str, limite: int = 10):
+    r = (supabase.table("descargas")
+         .select("kg, destino, created_at, "
+                 "camiones(patente_chasis,patente_acoplado), "
+                 "silobolsas(numero), clientes(nombre,apellido), "
+                 "lotes(nombre), campos(nombre)")
+         .eq("chat_id", chat_id)
+         .order("created_at", desc=True)
+         .limit(limite)
+         .execute())
+    return r.data or []
 
-def kg_acumulado_camion(camion_id: int, sesion_chat_id: str):
-    r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).eq("chat_id", sesion_chat_id).execute()
+def get_historial_mensajes(chat_id: str):
+    r = (supabase.table("historial_chat")
+         .select("rol, mensaje")
+         .eq("chat_id", chat_id)
+         .order("created_at", desc=True)
+         .limit(12)
+         .execute())
+    msgs = list(reversed(r.data or []))
+    return [{"role": m["rol"], "content": m["mensaje"]} for m in msgs]
+
+def guardar_mensaje(chat_id: str, rol: str, mensaje: str):
+    supabase.table("historial_chat").insert({
+        "chat_id":    chat_id,
+        "rol":        rol,
+        "mensaje":    mensaje,
+        "created_at": ahora().isoformat()
+    }).execute()
+
+def kg_acumulado_camion(camion_id: int, chat_id: str):
+    r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).eq("chat_id", chat_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
 
 def kg_acumulado_silo(silo_id: int):
     r = supabase.table("descargas").select("kg").eq("silobolsa_id", silo_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
 
-def parsear_descarga(texto: str):
-    t = texto.upper().strip()
-    m_kg = re.search(r'(\d[\d\.,]*)\s*KG[S]?', t)
-    if not m_kg:
-        return None
-    kg_str = m_kg.group(1).replace('.', '').replace(',', '.')
-    kg = float(kg_str)
-    patentes = re.findall(r'\b([A-Z]{2,3}\s?\d{3}\s?[A-Z]{0,2})\b', t)
-    patentes = [re.sub(r'\s+', '', p) for p in patentes]
-    return kg, patentes
+def barra(actual, total):
+    if not total: return ""
+    pct    = min(actual / total, 1.0)
+    llenos = int(pct * 20)
+    return "█" * llenos + "░" * (20 - llenos) + f" {pct*100:.0f}%"
 
-# ── /start — registro de usuario nuevo ──────────────────────
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-    if usuario:
-        await update.message.reply_text(
-            f"Hola {usuario['nombre']}, ya estás registrado como *{usuario['rol']}*.\n"
-            "Mandá una descarga o usá /ayuda.",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
+# ── Contexto para Claude ─────────────────────────────────────
+def construir_contexto(usuario, sesion, historial_descargas):
+    ctx = {"usuario": usuario, "sesion_activa": None, "ultimas_descargas": []}
 
-    teclado = [["Operario", "Cliente", "Encargado"]]
-    await update.message.reply_text(
-        "Hola, no te conozco todavía. ¿Quién sos?",
-        reply_markup=ReplyKeyboardMarkup(teclado, one_time_keyboard=True, resize_keyboard=True)
-    )
-    return ROL
+    if sesion:
+        cliente = sesion.get("clientes") or {}
+        ctx["sesion_activa"] = {
+            "cliente":  f"{cliente.get('nombre','')} {cliente.get('apellido','')}".strip(),
+            "campo":    (sesion.get("campos")    or {}).get("nombre"),
+            "lote":     (sesion.get("lotes")     or {}).get("nombre"),
+            "destino":  sesion.get("destino"),
+            "camion":   sesion.get("camiones"),
+            "silobolsa": sesion.get("silobolsas"),
+        }
 
-async def recibir_rol(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = update.message.text.lower().strip()
-    if texto not in ["operario", "cliente", "encargado"]:
-        await update.message.reply_text("Elegí una opción del teclado.")
-        return ROL
-    context.user_data["rol"] = texto
-    await update.message.reply_text(
-        "¿Cuál es tu nombre y apellido?",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return NOMBRE
+    for d in historial_descargas:
+        cliente = d.get("clientes") or {}
+        ctx["ultimas_descargas"].append({
+            "kg":       d["kg"],
+            "destino":  d["destino"],
+            "camion":   d.get("camiones"),
+            "silo":     d.get("silobolsas"),
+            "cliente":  f"{cliente.get('nombre','')} {cliente.get('apellido','')}".strip(),
+            "lote":     (d.get("lotes")   or {}).get("nombre"),
+            "campo":    (d.get("campos")  or {}).get("nombre"),
+            "hora":     d["created_at"],
+        })
 
-async def recibir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nombre = update.message.text.strip()
-    rol    = context.user_data["rol"]
-    uid    = str(update.effective_user.id)
+    return json.dumps(ctx, ensure_ascii=False, default=str)
 
-    supabase.table("usuarios").insert({
-        "telegram_id": uid,
-        "nombre":      nombre,
-        "rol":         rol,
-        "activo":      True
-    }).execute()
+SYSTEM_PROMPT = """Sos el asistente del sistema de tolvas de una empresa agropecuaria argentina.
+Tu trabajo es interpretar los mensajes de operarios, clientes y encargados, y responder SIEMPRE con un JSON.
 
-    await update.message.reply_text(
-        f"✅ Registrado como *{rol}*. Bienvenido {nombre}!\n\n"
-        + ("Mandá una descarga cuando quieras. Usá /ayuda si tenés dudas." if rol == "operario"
-           else "Usá /resumen para consultar tus datos." if rol == "cliente"
-           else "Tenés acceso completo. Usá /ayuda."),
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
+ROLES:
+- operario: puede registrar descargas y consultar estado
+- cliente: solo puede consultar sus propios datos
+- encargado: puede ver todo y gestionar sesiones
 
-# ── /ayuda ───────────────────────────────────────────────────
-async def cmd_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid     = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-    if not usuario:
-        await update.message.reply_text("Primero registrate con /start.")
-        return
+ACCIONES DISPONIBLES (respondé siempre con una de estas):
 
-    rol = usuario["rol"]
-    if rol == "operario":
-        texto = (
-            "🌾 *Comandos operario*\n\n"
-            "*Registrar descarga a camión:*\n"
-            "`AB123CD XY456ZW 5400kg`\n\n"
-            "*Registrar descarga a silobolsa:*\n"
-            "`5400kg` (sin patentes)\n\n"
-            "/nuevolote — cambiar cliente, campo y lote\n"
-            "/nuevocamion — cambiar camión activo\n"
-            "/nuevosilo — abrir silobolsa nuevo\n"
-            "/camion ABC123 — ver estado de un camión\n"
-            "/resumen — total de hoy"
-        )
-    elif rol == "cliente":
-        texto = (
-            "📊 *Comandos cliente*\n\n"
-            "/resumen — tus kg de hoy\n"
-            "/resumen semana — últimos 7 días\n"
-            "/resumen mes — mes actual"
-        )
-    else:
-        texto = (
-            "⚙️ *Comandos encargado*\n\n"
-            "/resumen — todo el día\n"
-            "/resumen semana — últimos 7 días\n"
-            "/camion ABC123 — estado de un camión\n"
-            "/nuevolote — cambiar sesión activa"
-        )
-    await update.message.reply_text(texto, parse_mode="Markdown")
+1. REGISTRAR DESCARGA — cuando el operario informa kg y destino:
+{"accion": "registrar", "kg": 5400, "patente_chasis": "AB123CD", "patente_acoplado": "XY456ZW", "capacidad_kg": 30000}
+Si va a silobolsa omitir patentes. capacidad_kg es opcional.
 
-# ── /nuevolote ───────────────────────────────────────────────
-async def cmd_nuevolote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid     = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-    if not usuario or usuario["rol"] not in ("operario", "encargado"):
-        await update.message.reply_text("Solo operarios y encargados pueden cambiar el lote.")
-        return ConversationHandler.END
-    await update.message.reply_text("¿Para qué cliente es esta cosecha? (nombre o apellido)")
-    return CLIENTE
+2. NUEVA SESION — cuando cambia cliente/campo/lote:
+{"accion": "nueva_sesion", "cliente_nombre": "García", "cliente_apellido": "Juan", "campo": "La Colorada", "lote": "Lote 3"}
 
-async def recibir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = update.message.text.strip()
-    r = supabase.table("clientes").select("*").ilike("apellido", f"%{texto}%").execute()
-    if not r.data:
-        r = supabase.table("clientes").select("*").ilike("nombre", f"%{texto}%").execute()
-    if not r.data:
-        # Crear cliente nuevo
-        partes = texto.split()
-        nombre   = partes[0] if partes else texto
-        apellido = " ".join(partes[1:]) if len(partes) > 1 else ""
-        nuevo = supabase.table("clientes").insert({"nombre": nombre, "apellido": apellido}).execute()
-        context.user_data["cliente_id"] = nuevo.data[0]["id"]
-        await update.message.reply_text(
-            f"Cliente *{texto}* creado. ¿En qué campo estamos cosechando?",
-            parse_mode="Markdown"
-        )
-    elif len(r.data) == 1:
-        context.user_data["cliente_id"] = r.data[0]["id"]
-        await update.message.reply_text(
-            f"Cliente: *{r.data[0]['nombre']} {r.data[0]['apellido']}*\n¿En qué campo?",
-            parse_mode="Markdown"
-        )
-    else:
-        nombres = "\n".join(f"- {x['nombre']} {x['apellido']}" for x in r.data)
-        context.user_data["clientes_encontrados"] = r.data
-        await update.message.reply_text(f"Encontré varios:\n{nombres}\n\nEscribí el apellido exacto.")
-        return CLIENTE
-    return CAMPO
+3. NUEVO DESTINO CAMION:
+{"accion": "nuevo_camion", "patente_chasis": "AB123CD", "patente_acoplado": "XY456ZW", "capacidad_kg": 30000}
 
-async def recibir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto      = update.message.text.strip()
-    cliente_id = context.user_data["cliente_id"]
-    r = supabase.table("campos").select("*").eq("cliente_id", cliente_id).ilike("nombre", f"%{texto}%").execute()
-    if not r.data:
-        nuevo = supabase.table("campos").insert({"nombre": texto, "cliente_id": cliente_id}).execute()
-        context.user_data["campo_id"] = nuevo.data[0]["id"]
-        await update.message.reply_text(f"Campo *{texto}* creado. ¿En qué lote?", parse_mode="Markdown")
-    else:
-        context.user_data["campo_id"] = r.data[0]["id"]
-        await update.message.reply_text(
-            f"Campo: *{r.data[0]['nombre']}*\n¿En qué lote?", parse_mode="Markdown"
-        )
-    return LOTE
+4. NUEVO SILO:
+{"accion": "nuevo_silo"}
 
-async def recibir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto    = update.message.text.strip()
-    campo_id = context.user_data["campo_id"]
-    r = supabase.table("lotes").select("*").eq("campo_id", campo_id).ilike("nombre", f"%{texto}%").execute()
-    if not r.data:
-        nuevo = supabase.table("lotes").insert({"nombre": texto, "campo_id": campo_id}).execute()
-        context.user_data["lote_id"] = nuevo.data[0]["id"]
-    else:
-        context.user_data["lote_id"] = r.data[0]["id"]
+5. RESUMEN — cuando piden datos/totales:
+{"accion": "resumen", "periodo": "hoy"} — periodo puede ser: hoy, semana, mes
 
-    chat_id = str(update.effective_chat.id)
-    supabase.table("sesion_activa").upsert({
-        "chat_id":    chat_id,
-        "cliente_id": context.user_data["cliente_id"],
-        "campo_id":   context.user_data["campo_id"],
-        "lote_id":    context.user_data["lote_id"],
-        "destino":    None,
-        "camion_id":  None,
-        "silo_id":    None,
-        "iniciada_at": ahora().isoformat()
-    }).execute()
+6. ESTADO CAMION:
+{"accion": "estado_camion", "patente": "AB123CD"}
 
-    teclado = [["Camión", "Silobolsa"]]
-    await update.message.reply_text(
-        f"✅ Sesión iniciada: *{texto}*\n¿Las descargas van a camión o silobolsa?",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(teclado, one_time_keyboard=True, resize_keyboard=True)
-    )
-    return DESTINO
+7. REGISTRAR USUARIO — cuando alguien nuevo se presenta:
+{"accion": "registrar_usuario", "nombre": "Juan Pérez", "rol": "operario"}
+rol puede ser: operario, cliente, encargado
 
-async def recibir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto   = update.message.text.lower().strip()
-    chat_id = str(update.effective_chat.id)
+8. PREGUNTAR — cuando falta información para completar una acción:
+{"accion": "preguntar", "mensaje": "¿Cuántos kg descargaste?"}
 
-    if "silo" in texto:
-        lote_id = context.user_data.get("lote_id") or get_sesion(chat_id)["lote_id"]
-        r = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
-        numero = (r.data[0]["numero"] + 1) if r.data else 1
-        nuevo  = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
-        silo_id = nuevo.data[0]["id"]
-        supabase.table("sesion_activa").update({
-            "destino": "silo", "silo_id": silo_id, "camion_id": None
-        }).eq("chat_id", chat_id).execute()
-        await update.message.reply_text(
-            f"🌾 Silobolsa #{numero} abierto. Mandá las descargas.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ConversationHandler.END
+9. RESPONDER — para respuestas informativas o que no requieren acción en BD:
+{"accion": "responder", "mensaje": "Hola! Para registrar una descarga..."}
 
-    await update.message.reply_text(
-        "¿Patente del chasis?",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    context.user_data["destino_camion"] = True
-    return PATENTE_CHASIS
+REGLAS IMPORTANTES:
+- Los operarios hablan informal y a veces con errores, interpretá con criterio
+- Si dicen "32 tones" o "32 t" interpretá como 32000 kg
+- Las patentes argentinas son formato AAA999 (vieja) o AA999AA (nueva)
+- Si falta info crítica para registrar, preguntá UNA SOLA cosa por vez
+- Si ya hay sesión activa con cliente/campo/lote, NO la pierdas salvo que explícitamente cambien
+- Respondé siempre en español rioplatense, informal y directo
+- NUNCA respondas con texto libre, SIEMPRE con JSON válido
+"""
 
-async def recibir_patente_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_chasis"] = update.message.text.upper().strip()
-    await update.message.reply_text("¿Patente del acoplado?")
-    return PATENTE_ACOPLADO
+# ── Ejecutar acción devuelta por Claude ──────────────────────
+async def ejecutar_accion(accion_json: dict, usuario, sesion, chat_id: str, ts) -> str:
+    accion = accion_json.get("accion")
 
-async def recibir_patente_acoplado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_acoplado"] = update.message.text.upper().strip()
-    await update.message.reply_text("¿Capacidad del camión en kg? (ej: 30000) — o escribí 0 si no sabés")
-    return CAPACIDAD
+    if accion == "preguntar" or accion == "responder":
+        return accion_json.get("mensaje", "")
 
-async def recibir_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    try:
-        cap = float(update.message.text.strip().replace('.','').replace(',','.'))
-    except ValueError:
-        cap = 0
-
-    chasis   = context.user_data["patente_chasis"]
-    acoplado = context.user_data["patente_acoplado"]
-
-    # Buscar si el camión ya existe
-    r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
-    if r.data:
-        camion_id = r.data[0]["id"]
-        if cap > 0:
-            supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
-    else:
-        nuevo = supabase.table("camiones").insert({
-            "patente_chasis": chasis, "patente_acoplado": acoplado,
-            "capacidad_kg": cap if cap > 0 else None
+    if accion == "registrar_usuario":
+        nombre = accion_json.get("nombre", "")
+        rol    = accion_json.get("rol", "operario")
+        if rol not in ("operario", "cliente", "encargado"):
+            rol = "operario"
+        supabase.table("usuarios").insert({
+            "telegram_id": str(usuario["telegram_id"] if usuario else ""),
+            "nombre":      nombre,
+            "rol":         rol,
+            "activo":      True
         }).execute()
-        camion_id = nuevo.data[0]["id"]
+        msgs = {
+            "operario":  "Ya podés registrar descargas. Cuando quieras cargar una descarga simplemente mandame los kg y la patente.",
+            "cliente":   "Podés pedirme el resumen de tus granos cuando quieras.",
+            "encargado": "Tenés acceso completo al sistema."
+        }
+        return f"✅ Bienvenido *{nombre}*! Quedaste registrado como *{rol}*.\n\n{msgs[rol]}"
 
-    supabase.table("sesion_activa").update({
-        "destino": "camion", "camion_id": camion_id, "silo_id": None
-    }).eq("chat_id", chat_id).execute()
+    if accion == "nueva_sesion":
+        nombre_c   = accion_json.get("cliente_nombre", "")
+        apellido_c = accion_json.get("cliente_apellido", "")
+        campo_n    = accion_json.get("campo", "")
+        lote_n     = accion_json.get("lote", "")
 
-    await update.message.reply_text(
-        f"🚛 Camión *{chasis} / {acoplado}* listo.\nMandá las descargas.",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
+        # Cliente
+        r = supabase.table("clientes").select("*").ilike("apellido", f"%{apellido_c}%").execute()
+        if not r.data:
+            r = supabase.table("clientes").select("*").ilike("nombre", f"%{nombre_c}%").execute()
+        if r.data:
+            cliente_id = r.data[0]["id"]
+            cliente_str = f"{r.data[0]['nombre']} {r.data[0]['apellido']}"
+        else:
+            nuevo = supabase.table("clientes").insert({"nombre": nombre_c, "apellido": apellido_c}).execute()
+            cliente_id  = nuevo.data[0]["id"]
+            cliente_str = f"{nombre_c} {apellido_c}"
 
-# ── /nuevosilo ───────────────────────────────────────────────
-async def cmd_nuevosilo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    sesion  = get_sesion(chat_id)
-    if not sesion or not sesion.get("lote_id"):
-        await update.message.reply_text("Primero iniciá una sesión con /nuevolote.")
-        return
-    lote_id = sesion["lote_id"]
-    r = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
-    numero  = (r.data[0]["numero"] + 1) if r.data else 1
-    nuevo   = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
-    silo_id = nuevo.data[0]["id"]
-    supabase.table("sesion_activa").update({
-        "destino": "silo", "silo_id": silo_id, "camion_id": None
-    }).eq("chat_id", chat_id).execute()
-    await update.message.reply_text(f"🌾 Silobolsa #{numero} abierto.")
+        # Campo
+        r = supabase.table("campos").select("*").eq("cliente_id", cliente_id).ilike("nombre", f"%{campo_n}%").execute()
+        if r.data:
+            campo_id = r.data[0]["id"]
+        else:
+            nuevo    = supabase.table("campos").insert({"nombre": campo_n, "cliente_id": cliente_id}).execute()
+            campo_id = nuevo.data[0]["id"]
 
-# ── /nuevocamion ─────────────────────────────────────────────
-async def cmd_nuevocamion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid     = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-    if not usuario or usuario["rol"] not in ("operario", "encargado"):
-        await update.message.reply_text("Solo operarios y encargados pueden hacer esto.")
-        return ConversationHandler.END
-    await update.message.reply_text("¿Patente del chasis del nuevo camión?")
-    return NUEVO_CAMION_CHASIS
+        # Lote
+        r = supabase.table("lotes").select("*").eq("campo_id", campo_id).ilike("nombre", f"%{lote_n}%").execute()
+        if r.data:
+            lote_id = r.data[0]["id"]
+        else:
+            nuevo   = supabase.table("lotes").insert({"nombre": lote_n, "campo_id": campo_id}).execute()
+            lote_id = nuevo.data[0]["id"]
 
-async def nuevo_camion_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_chasis"] = update.message.text.upper().strip()
-    await update.message.reply_text("¿Patente del acoplado?")
-    return NUEVO_CAMION_ACOPLADO
-
-async def nuevo_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_acoplado"] = update.message.text.upper().strip()
-    await update.message.reply_text("¿Capacidad en kg? (ej: 30000) — o escribí 0 si no sabés")
-    return NUEVO_CAMION_CAP
-
-async def nuevo_camion_cap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    try:
-        cap = float(update.message.text.strip().replace('.','').replace(',','.'))
-    except ValueError:
-        cap = 0
-    chasis   = context.user_data["patente_chasis"]
-    acoplado = context.user_data["patente_acoplado"]
-    r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
-    if r.data:
-        camion_id = r.data[0]["id"]
-        if cap > 0:
-            supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
-    else:
-        nuevo = supabase.table("camiones").insert({
-            "patente_chasis": chasis, "patente_acoplado": acoplado,
-            "capacidad_kg": cap if cap > 0 else None
+        supabase.table("sesion_activa").upsert({
+            "chat_id":     chat_id,
+            "cliente_id":  cliente_id,
+            "campo_id":    campo_id,
+            "lote_id":     lote_id,
+            "destino":     None,
+            "camion_id":   None,
+            "silo_id":     None,
+            "iniciada_at": ahora().isoformat()
         }).execute()
-        camion_id = nuevo.data[0]["id"]
-    supabase.table("sesion_activa").update({
-        "destino": "camion", "camion_id": camion_id, "silo_id": None
-    }).eq("chat_id", chat_id).execute()
-    await update.message.reply_text(
-        f"🚛 Camión *{chasis} / {acoplado}* activo.",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
+        return f"✅ Sesión iniciada\n👤 *{cliente_str}* / {campo_n} / {lote_n}\n\n¿Las descargas van a camión o silobolsa?"
 
-# ── /camion ──────────────────────────────────────────────────
-async def cmd_camion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usá: /camion PATENTE — ej: /camion AB123CD")
-        return
-    patente = context.args[0].upper()
-    r = supabase.table("camiones").select("*").eq("patente_chasis", patente).execute()
-    if not r.data:
-        r = supabase.table("camiones").select("*").eq("patente_acoplado", patente).execute()
-    if not r.data:
-        await update.message.reply_text(f"No encontré el camión {patente}.")
-        return
-    camion    = r.data[0]
-    chat_id   = str(update.effective_chat.id)
-    acumulado = kg_acumulado_camion(camion["id"], chat_id)
-    capacidad = camion.get("capacidad_kg")
-    lineas    = [
-        f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*",
-        f"Acumulado: *{acumulado:,.0f} kg*"
-    ]
-    if capacidad:
-        faltan = max(capacidad - acumulado, 0)
-        lineas.append(barra(acumulado, capacidad))
-        lineas.append(f"Capacidad: {capacidad:,.0f} kg — Faltan: {faltan:,.0f} kg")
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
-
-# ── /resumen ─────────────────────────────────────────────────
-async def cmd_resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid     = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-    if not usuario:
-        await update.message.reply_text("Primero registrate con /start.")
-        return
-
-    args  = " ".join(context.args).lower() if context.args else ""
-    ahora_ts = ahora()
-
-    if "mes" in args:
-        desde = ahora_ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        titulo = f"Mes {ahora_ts.strftime('%B %Y')}"
-    elif "semana" in args:
-        desde = ahora_ts - timedelta(days=7)
-        titulo = "Últimos 7 días"
-    else:
-        desde = ahora_ts.replace(hour=0, minute=0, second=0, microsecond=0)
-        titulo = f"Hoy {ahora_ts.strftime('%d/%m/%Y')}"
-
-    q = (supabase.table("descargas")
-         .select("kg, tolva, destino, camion_id, silobolsa_id, cliente_id, "
-                 "camiones(patente_chasis,patente_acoplado), "
-                 "clientes(nombre,apellido), "
-                 "lotes(nombre), campos(nombre)")
-         .gte("created_at", desde.isoformat()))
-
-    if usuario["rol"] == "cliente":
-        q = q.eq("cliente_id", usuario.get("cliente_id"))
-
-    res = q.order("created_at", desc=True).execute()
-
-    if not res.data:
-        await update.message.reply_text(f"Sin registros para {titulo}.")
-        return
-
-    total_kg = sum(float(r["kg"]) for r in res.data)
-    camiones_set = set()
-    silos_set    = set()
-    for r in res.data:
-        if r["camion_id"]:   camiones_set.add(r["camion_id"])
-        if r["silobolsa_id"]: silos_set.add(r["silobolsa_id"])
-
-    lineas = [f"📊 *{titulo}*\n",
-              f"Total: *{total_kg:,.0f} kg*",
-              f"Camiones: {len(camiones_set)}  |  Silobolsas: {len(silos_set)}",
-              f"Descargas: {len(res.data)}\n"]
-
-    if usuario["rol"] == "encargado":
-        clientes = {}
-        for r in res.data:
-            c = r.get("clientes")
-            nombre = f"{c['nombre']} {c['apellido']}" if c else "Sin cliente"
-            clientes.setdefault(nombre, 0)
-            clientes[nombre] += float(r["kg"])
-        for nombre, kg in sorted(clientes.items()):
-            lineas.append(f"👤 *{nombre}*: {kg:,.0f} kg")
-
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
-
-# ── Registro de descarga (mensaje libre) ─────────────────────
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid     = str(update.effective_user.id)
-    usuario = get_usuario(uid)
-
-    if not usuario:
-        await update.message.reply_text("No te conozco todavía. Escribí /start para registrarte.")
-        return
-
-    if usuario["rol"] == "cliente":
-        await update.message.reply_text("Usá /resumen para consultar tus datos.")
-        return
-
-    chat_id = str(update.effective_chat.id)
-    sesion  = get_sesion(chat_id)
-    texto   = update.message.text or ""
-
-    # Sin sesión activa → iniciar flujo
-    if not sesion or not sesion.get("lote_id"):
-        context.user_data.clear()
-        await update.message.reply_text(
-            "No hay sesión activa. ¿Para qué cliente es esta cosecha?"
-        )
-        return  # El ConversationHandler toma el control
-
-    resultado = parsear_descarga(texto)
-    if not resultado:
-        if re.search(r'\d{3,}', texto):
-            await update.message.reply_text(
-                "⚠️ No entendí. Ejemplos:\n"
-                "`AB123CD XY456ZW 5400kg` — camión\n"
-                "`5400kg` — silobolsa activo",
-                parse_mode="Markdown"
-            )
-        return
-
-    kg, patentes = resultado
-    ts = update.message.date.astimezone(ARG)
-
-    # Determinar destino
-    destino = sesion.get("destino")
-
-    if patentes and len(patentes) >= 2:
-        # Tiene dos patentes → camión
-        chasis, acoplado = patentes[0], patentes[1]
+    if accion == "nuevo_camion":
+        chasis   = accion_json.get("patente_chasis", "").upper()
+        acoplado = accion_json.get("patente_acoplado", "").upper()
+        cap      = accion_json.get("capacidad_kg")
         r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
         if r.data:
-            camion = r.data[0]
+            camion_id = r.data[0]["id"]
+            if cap:
+                supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
         else:
-            nuevo  = supabase.table("camiones").insert({"patente_chasis": chasis, "patente_acoplado": acoplado}).execute()
-            camion = nuevo.data[0]
+            nuevo     = supabase.table("camiones").insert({
+                "patente_chasis": chasis, "patente_acoplado": acoplado,
+                "capacidad_kg": cap
+            }).execute()
+            camion_id = nuevo.data[0]["id"]
         supabase.table("sesion_activa").update({
-            "destino": "camion", "camion_id": camion["id"], "silo_id": None
+            "destino": "camion", "camion_id": camion_id, "silo_id": None
         }).eq("chat_id", chat_id).execute()
-        sesion["destino"]   = "camion"
-        sesion["camion_id"] = camion["id"]
-        sesion["camiones"]  = camion
-        destino = "camion"
+        cap_str = f" ({cap:,.0f} kg)" if cap else ""
+        return f"🚛 Camión *{chasis} / {acoplado}*{cap_str} listo. Mandá las descargas."
 
-    elif not destino:
-        await update.message.reply_text(
-            "¿Este grano va a camión o silobolsa?\n"
-            "Usá /nuevocamion o /nuevosilo para definirlo.",
-        )
-        return
+    if accion == "nuevo_silo":
+        if not sesion or not sesion.get("lote_id"):
+            return "Primero indicame el cliente, campo y lote."
+        lote_id = sesion["lote_id"]
+        r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
+        numero  = (r.data[0]["numero"] + 1) if r.data else 1
+        nuevo   = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
+        supabase.table("sesion_activa").update({
+            "destino": "silo", "silo_id": nuevo.data[0]["id"], "camion_id": None
+        }).eq("chat_id", chat_id).execute()
+        return f"🌾 Silobolsa #{numero} abierto. Mandá las descargas."
 
-    # Guardar descarga
-    data = {
-        "kg":          kg,
-        "destino":     destino,
-        "camion_id":   sesion.get("camion_id") if destino == "camion" else None,
-        "silobolsa_id": sesion.get("silo_id") if destino == "silo" else None,
-        "lote_id":     sesion.get("lote_id"),
-        "campo_id":    sesion.get("campo_id"),
-        "cliente_id":  sesion.get("cliente_id"),
-        "tolva":       update.effective_chat.title or "directa",
-        "operario_id": usuario["id"],
-        "chat_id":     chat_id,
-        "created_at":  ts.isoformat(),
-    }
-    supabase.table("descargas").insert(data).execute()
+    if accion == "registrar":
+        if not sesion or not sesion.get("lote_id"):
+            return "Antes de registrar necesito saber el cliente, campo y lote. ¿Me los decís?"
 
-    # Armar respuesta
-    cliente_obj = sesion.get("clientes") or {}
-    cliente_str = f"{cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}".strip() or "—"
-    campo_str   = (sesion.get("campos") or {}).get("nombre", "—")
-    lote_str    = (sesion.get("lotes") or {}).get("nombre", "—")
+        kg       = float(accion_json.get("kg", 0))
+        chasis   = (accion_json.get("patente_chasis") or "").upper()
+        acoplado = (accion_json.get("patente_acoplado") or "").upper()
+        cap      = accion_json.get("capacidad_kg")
 
-    if destino == "camion":
-        camion_obj  = sesion.get("camiones") or {}
-        acumulado   = kg_acumulado_camion(sesion["camion_id"], chat_id) + kg
-        capacidad   = camion_obj.get("capacidad_kg")
-        chasis_str  = camion_obj.get("patente_chasis", "—")
-        acoplado_str = camion_obj.get("patente_acoplado", "—")
+        destino = sesion.get("destino")
+
+        if chasis and acoplado:
+            r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
+            if r.data:
+                camion    = r.data[0]
+                camion_id = camion["id"]
+                if cap:
+                    supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
+                    camion["capacidad_kg"] = cap
+            else:
+                nuevo     = supabase.table("camiones").insert({
+                    "patente_chasis": chasis, "patente_acoplado": acoplado,
+                    "capacidad_kg": cap
+                }).execute()
+                camion    = nuevo.data[0]
+                camion_id = camion["id"]
+            supabase.table("sesion_activa").update({
+                "destino": "camion", "camion_id": camion_id, "silo_id": None
+            }).eq("chat_id", chat_id).execute()
+            destino           = "camion"
+            sesion["destino"] = "camion"
+            sesion["camion_id"] = camion_id
+            sesion["camiones"]  = camion
+
+        elif not destino:
+            return "¿Esta descarga va a camión o silobolsa?"
+
+        data = {
+            "kg":           kg,
+            "destino":      destino,
+            "camion_id":    sesion.get("camion_id") if destino == "camion" else None,
+            "silobolsa_id": sesion.get("silo_id")   if destino == "silo"   else None,
+            "lote_id":      sesion.get("lote_id"),
+            "campo_id":     sesion.get("campo_id"),
+            "cliente_id":   sesion.get("cliente_id"),
+            "tolva":        chat_id,
+            "operario_id":  usuario["id"] if usuario else None,
+            "chat_id":      chat_id,
+            "created_at":   ts.isoformat(),
+        }
+        supabase.table("descargas").insert(data).execute()
+
+        cliente_obj  = sesion.get("clientes") or {}
+        cliente_str  = f"{cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}".strip() or "—"
+        campo_str    = (sesion.get("campos")  or {}).get("nombre", "—")
+        lote_str     = (sesion.get("lotes")   or {}).get("nombre", "—")
+
+        if destino == "camion":
+            camion_obj   = sesion.get("camiones") or {}
+            acumulado    = kg_acumulado_camion(sesion["camion_id"], chat_id) + kg
+            capacidad    = camion_obj.get("capacidad_kg") or cap
+            chasis_str   = camion_obj.get("patente_chasis",   chasis   or "—")
+            acoplado_str = camion_obj.get("patente_acoplado", acoplado or "—")
+            lineas = [
+                f"✅ *{cliente_str} / {campo_str} / {lote_str}*",
+                f"🚛 {chasis_str} — {acoplado_str}",
+                f"Esta carga:  *{kg:,.0f} kg*",
+                f"Acumulado:   *{acumulado:,.0f} kg*" + (f" / {capacidad:,.0f} kg" if capacidad else ""),
+            ]
+            if capacidad:
+                faltan = max(capacidad - acumulado, 0)
+                lineas.append(barra(acumulado, capacidad))
+                aviso = " ⚠️ casi lleno" if acumulado / capacidad >= 0.85 else ""
+                lineas.append(f"Faltan: *{faltan:,.0f} kg*{aviso}")
+        else:
+            silo_num  = (sesion.get("silobolsas") or {}).get("numero", "?")
+            acumulado = kg_acumulado_silo(sesion["silo_id"]) + kg
+            lineas = [
+                f"✅ *{cliente_str} / {campo_str} / {lote_str}*",
+                f"🌾 Silobolsa #{silo_num}",
+                f"Esta carga:  *{kg:,.0f} kg*",
+                f"Acumulado:   *{acumulado:,.0f} kg*",
+            ]
+        return "\n".join(lineas)
+
+    if accion == "resumen":
+        periodo  = accion_json.get("periodo", "hoy")
+        ahora_ts = ahora()
+        if periodo == "mes":
+            desde  = ahora_ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            titulo = f"Mes {ahora_ts.strftime('%B %Y')}"
+        elif periodo == "semana":
+            desde  = ahora_ts - timedelta(days=7)
+            titulo = "Últimos 7 días"
+        else:
+            desde  = ahora_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+            titulo = f"Hoy {ahora_ts.strftime('%d/%m/%Y')}"
+
+        q = (supabase.table("descargas")
+             .select("kg, destino, camion_id, silobolsa_id, cliente_id, clientes(nombre,apellido)")
+             .gte("created_at", desde.isoformat()))
+        if usuario and usuario["rol"] == "cliente":
+            q = q.eq("cliente_id", usuario.get("cliente_id"))
+        res = q.order("created_at", desc=True).execute()
+
+        if not res.data:
+            return f"Sin registros para {titulo}."
+
+        total_kg     = sum(float(r["kg"]) for r in res.data)
+        camiones_set = {r["camion_id"]    for r in res.data if r["camion_id"]}
+        silos_set    = {r["silobolsa_id"] for r in res.data if r["silobolsa_id"]}
 
         lineas = [
-            f"✅ *{cliente_str} / {campo_str} / {lote_str}*",
-            f"🚛 {chasis_str} — {acoplado_str}",
-            f"Esta carga:  *{kg:,.0f} kg*",
-            f"Acumulado:   *{acumulado:,.0f} kg*" + (f" / {capacidad:,.0f} kg" if capacidad else ""),
+            f"📊 *{titulo}*\n",
+            f"Total: *{total_kg:,.0f} kg*",
+            f"Camiones: {len(camiones_set)}  |  Silobolsas: {len(silos_set)}",
+            f"Descargas: {len(res.data)}\n"
+        ]
+        if usuario and usuario["rol"] == "encargado":
+            clientes = {}
+            for r in res.data:
+                c      = r.get("clientes")
+                nombre = f"{c['nombre']} {c['apellido']}" if c else "Sin cliente"
+                clientes[nombre] = clientes.get(nombre, 0) + float(r["kg"])
+            for nombre, kg in sorted(clientes.items()):
+                lineas.append(f"👤 *{nombre}*: {kg:,.0f} kg")
+        return "\n".join(lineas)
+
+    if accion == "estado_camion":
+        patente = accion_json.get("patente", "").upper()
+        r = supabase.table("camiones").select("*").eq("patente_chasis", patente).execute()
+        if not r.data:
+            r = supabase.table("camiones").select("*").eq("patente_acoplado", patente).execute()
+        if not r.data:
+            return f"No encontré el camión {patente}."
+        camion    = r.data[0]
+        acumulado = kg_acumulado_camion(camion["id"], chat_id)
+        capacidad = camion.get("capacidad_kg")
+        lineas    = [
+            f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*",
+            f"Acumulado: *{acumulado:,.0f} kg*"
         ]
         if capacidad:
             faltan = max(capacidad - acumulado, 0)
             lineas.append(barra(acumulado, capacidad))
-            aviso = " ⚠️ casi lleno" if acumulado / capacidad >= 0.85 else ""
-            lineas.append(f"Faltan: *{faltan:,.0f} kg*{aviso}")
-    else:
-        silo_num  = (sesion.get("silobolsas") or {}).get("numero", "?")
-        acumulado = kg_acumulado_silo(sesion["silo_id"]) + kg
-        lineas = [
-            f"✅ *{cliente_str} / {campo_str} / {lote_str}*",
-            f"🌾 Silobolsa #{silo_num}",
-            f"Esta carga:  *{kg:,.0f} kg*",
-            f"Acumulado:   *{acumulado:,.0f} kg*",
-        ]
+            lineas.append(f"Capacidad: {capacidad:,.0f} kg — Faltan: {faltan:,.0f} kg")
+        return "\n".join(lineas)
 
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
+    return "No entendí eso. ¿Podés repetirlo?"
 
-# ── Main ─────────────────────────────────────────────────────
+# ── Llamada a Claude ─────────────────────────────────────────
+def consultar_claude(historial_msgs: list, contexto: str, mensaje_usuario: str) -> dict:
+    mensajes = historial_msgs + [{"role": "user", "content": mensaje_usuario}]
+    try:
+        resp = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=SYSTEM_PROMPT + f"\n\nCONTEXTO ACTUAL:\n{contexto}",
+            messages=mensajes
+        )
+        texto = resp.content[0].text.strip()
+        texto = re.sub(r'^```json\s*|\s*```$', '', texto, flags=re.MULTILINE).strip()
+        return json.loads(texto)
+    except Exception as e:
+        logging.error(f"Error Claude: {e}")
+        return {"accion": "responder", "mensaje": "Hubo un error, intentá de nuevo."}
+
+# ── Handler principal ────────────────────────────────────────
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg     = update.message
+    texto   = msg.text or ""
+    uid     = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id)
+    ts      = msg.date.astimezone(ARG)
+
+    usuario           = get_usuario(uid)
+    sesion            = get_sesion(chat_id)
+    historial_descargas = get_historial(chat_id)
+    historial_msgs    = get_historial_mensajes(chat_id)
+    contexto          = construir_contexto(usuario, sesion, historial_descargas)
+
+    # Guardar mensaje del usuario
+    guardar_mensaje(chat_id, "user", texto)
+
+    # Consultar Claude
+    accion_json = consultar_claude(historial_msgs, contexto, texto)
+    respuesta   = await ejecutar_accion(accion_json, usuario, sesion, chat_id, ts)
+
+    # Guardar respuesta del bot
+    guardar_mensaje(chat_id, "assistant", respuesta)
+
+    await msg.reply_text(respuesta, parse_mode="Markdown")
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_message(update, context)
+
+async def cmd_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    update.message.text = "/ayuda"
+    await handle_message(update, context)
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
-
-    registro_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start)],
-        states={
-            ROL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_rol)],
-            NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nombre)],
-        },
-        fallbacks=[]
-    )
-
-    lote_conv = ConversationHandler(
-        entry_points=[CommandHandler("nuevolote", cmd_nuevolote)],
-        states={
-            CLIENTE:          [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cliente)],
-            CAMPO:            [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_campo)],
-            LOTE:             [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_lote)],
-            DESTINO:          [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_destino)],
-            PATENTE_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_patente_chasis)],
-            PATENTE_ACOPLADO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_patente_acoplado)],
-            CAPACIDAD:        [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_capacidad)],
-        },
-        fallbacks=[]
-    )
-
-    camion_conv = ConversationHandler(
-        entry_points=[CommandHandler("nuevocamion", cmd_nuevocamion)],
-        states={
-            NUEVO_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_camion_chasis)],
-            NUEVO_CAMION_ACOPLADO: [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_camion_acoplado)],
-            NUEVO_CAMION_CAP:      [MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_camion_cap)],
-        },
-        fallbacks=[]
-    )
-
-    app.add_handler(registro_conv)
-    app.add_handler(lote_conv)
-    app.add_handler(camion_conv)
-    app.add_handler(CommandHandler("ayuda",      cmd_ayuda))
-    app.add_handler(CommandHandler("resumen",    cmd_resumen))
-    app.add_handler(CommandHandler("nuevosilo",  cmd_nuevosilo))
-    app.add_handler(CommandHandler("camion",     cmd_camion))
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("ayuda",  cmd_ayuda))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     print("Bot corriendo...")
     app.run_polling()
+```
+
+3. Clic en **Commit changes** → **Commit changes**
+
+---
+
+También necesitamos agregar `anthropic` al `requirements.txt`:
+
+4. Abrí **requirements.txt** → lápiz ✏️
+5. Reemplazá con:
+```
+python-telegram-bot==21.6
+supabase==2.7.4
+anthropic==0.25.0
