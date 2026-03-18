@@ -504,13 +504,31 @@ async def add_op_soy_yo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Agregar cliente ──────────────────────────────────────────
 async def add_cli_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["nuevo_nombre"] = update.message.text.strip()
+    nombre         = update.message.text.strip()
+    contratista_id = context.user_data["contratista_id"]
+    uid            = str(update.effective_user.id)
+
+    if "editando_cli_id" in context.user_data:
+        cli_id = context.user_data.pop("editando_cli_id")
+        partes  = nombre.split()
+        supabase.table("clientes").update({
+            "nombre":   partes[0],
+            "apellido": " ".join(partes[1:]) if len(partes) > 1 else ""
+        }).eq("id", cli_id).execute()
+        await update.message.reply_text(
+            f"✅ Nombre actualizado a *{nombre}*.",
+            parse_mode="Markdown",
+            reply_markup=teclado_menu_contratista(contratista_id, uid)
+        )
+        return ConversationHandler.END
+
+    context.user_data["nuevo_nombre"] = nombre
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Sí, soy yo",         callback_data="cli_soy_yo")],
         [InlineKeyboardButton("❌ No, es otra persona", callback_data="cli_otro")],
     ])
     await update.message.reply_text(
-        f"¿El cliente *{context.user_data['nuevo_nombre']}* sos vos mismo?",
+        f"¿El cliente *{nombre}* sos vos mismo?",
         parse_mode="Markdown", reply_markup=teclado
     )
     return ADD_CLI_SOY_YO
