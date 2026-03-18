@@ -17,13 +17,11 @@ claude   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 logging.basicConfig(level=logging.INFO)
 ARG = timezone(timedelta(hours=-3))
 
-# ── Estados conversación ─────────────────────────────────────
 (REGISTRO_NOMBRE,
  LOTE_CLIENTE, LOTE_CAMPO, LOTE_LOTE, LOTE_DESTINO,
  LOTE_CHASIS, LOTE_ACOPLADO, LOTE_CAPACIDAD,
  CAMION_CHASIS, CAMION_ACOPLADO, CAMION_CAPACIDAD) = range(11)
 
-# ── Helpers BD ───────────────────────────────────────────────
 def ahora():
     return datetime.now(ARG)
 
@@ -67,17 +65,18 @@ def parsear_patentes(texto: str):
     patentes = re.findall(r'\b([A-Z]{2,3}\s?\d{3}\s?[A-Z]{0,2})\b', t)
     return [re.sub(r'\s+', '', p) for p in patentes]
 
-def armar_confirmacion(sesion, kg, destino_override=None):
+def armar_confirmacion(sesion, kg, acumulado_antes=None, destino_override=None):
     cliente_obj  = sesion.get("clientes") or {}
     cliente_str  = f"{cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}".strip() or "—"
     campo_str    = (sesion.get("campos")  or {}).get("nombre", "—")
     lote_str     = (sesion.get("lotes")   or {}).get("nombre", "—")
     destino      = destino_override or sesion.get("destino")
+    chat_id      = sesion.get("chat_id", "")
 
     if destino == "camion":
         camion_obj   = sesion.get("camiones") or {}
-        chat_id      = sesion["chat_id"]
-        acumulado    = kg_acumulado_camion(sesion["camion_id"], chat_id) + kg
+        prev         = acumulado_antes if acumulado_antes is not None else kg_acumulado_camion(sesion["camion_id"], chat_id)
+        acumulado    = prev + kg
         capacidad    = camion_obj.get("capacidad_kg")
         chasis_str   = camion_obj.get("patente_chasis",   "—")
         acoplado_str = camion_obj.get("patente_acoplado", "—")
@@ -95,7 +94,8 @@ def armar_confirmacion(sesion, kg, destino_override=None):
     else:
         silo_num  = (sesion.get("silobolsas") or {}).get("numero", "?")
         silo_id   = sesion.get("silo_id")
-        acumulado = (kg_acumulado_silo(silo_id) if silo_id else 0) + kg
+        prev      = acumulado_antes if acumulado_antes is not None else (kg_acumulado_silo(silo_id) if silo_id else 0)
+        acumulado = prev + kg
         lineas = [
             f"✅ *{cliente_str} / {campo_str} / {lote_str}*",
             f"🌾 Silobolsa #{silo_num}",
@@ -104,7 +104,7 @@ def armar_confirmacion(sesion, kg, destino_override=None):
         ]
     return "\n".join(lineas)
 
-def guardar_descarga(sesion, kg, usuario, ts, camion_override=None):
+def guardar_descarga(sesion, kg, usuario, ts):
     destino = sesion.get("destino")
     data = {
         "kg":           kg,
@@ -121,7 +121,7 @@ def guardar_descarga(sesion, kg, usuario, ts, camion_override=None):
     }
     supabase.table("descargas").insert(data).execute()
 
-# ── /start — registro ────────────────────────────────────────
+# ── /start ───────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
     usuario = get_usuario(uid)
@@ -226,8 +226,8 @@ async def lote_recibir_cliente(update: Update, context: ContextTypes.DEFAULT_TYP
     if not r.data:
         r = supabase.table("clientes").select("*").ilike("nombre", f"%{texto}%").execute()
     if not r.data:
-        partes   = texto.split()
-        nuevo    = supabase.table("clientes").insert({
+        partes = texto.split()
+        nuevo  = supabase.table("clientes").insert({
             "nombre":   partes[0],
             "apellido": " ".join(partes[1:]) if len(partes) > 1 else ""
         }).execute()
@@ -328,12 +328,12 @@ async def lote_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
     return LOTE_CHASIS
 
 async def lote_recibir_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_chasis"] = update.message.text.upper().strip()
+    context.user_data["patente_chasis"] = re.sub(r'\s+', '', update.message.text.upper().strip())
     await update.message.reply_text("¿Patente del *acoplado*?", parse_mode="Markdown")
     return LOTE_ACOPLADO
 
 async def lote_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_acoplado"] = update.message.text.upper().strip()
+    context.user_data["patente_acoplado"] = re.sub(r'\s+', '', update.message.text.upper().strip())
     await update.message.reply_text(
         "¿Capacidad del camión en kg? (ej: `30000`)\nSi no sabés escribí *0*",
         parse_mode="Markdown"
@@ -341,7 +341,7 @@ async def lote_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_TY
     return LOTE_CAPACIDAD
 
 async def lote_recibir_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
+    chat_id  = str(update.effective_chat.id)
     try:
         cap = float(update.message.text.strip().replace('.','').replace(',','.'))
     except ValueError:
@@ -380,12 +380,12 @@ async def cmd_nuevocamion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CAMION_CHASIS
 
 async def camion_recibir_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_chasis"] = update.message.text.upper().strip()
+    context.user_data["patente_chasis"] = re.sub(r'\s+', '', update.message.text.upper().strip())
     await update.message.reply_text("¿Patente del *acoplado*?", parse_mode="Markdown")
     return CAMION_ACOPLADO
 
 async def camion_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["patente_acoplado"] = update.message.text.upper().strip()
+    context.user_data["patente_acoplado"] = re.sub(r'\s+', '', update.message.text.upper().strip())
     await update.message.reply_text(
         "¿Capacidad en kg? (ej: `30000`) — Si no sabés escribí *0*",
         parse_mode="Markdown"
@@ -393,7 +393,7 @@ async def camion_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_
     return CAMION_CAPACIDAD
 
 async def camion_recibir_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
+    chat_id  = str(update.effective_chat.id)
     try:
         cap = float(update.message.text.strip().replace('.','').replace(',','.'))
     except ValueError:
@@ -544,7 +544,7 @@ def consultar_claude_libre(mensaje: str, sesion, usuario) -> str:
         logging.error(f"Error Claude: {e}")
         return "No entendí el mensaje. Usá el formato: `AB123CD XY456ZW 5400kg`"
 
-# ── Handler principal de mensajes ────────────────────────────
+# ── Handler principal ────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
     usuario = get_usuario(uid)
@@ -553,32 +553,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     ts      = msg.date.astimezone(ARG)
 
-    # Usuario no registrado
     if not usuario:
         await msg.reply_text("No te conozco. Escribí /start para registrarte.")
         return
 
-    # Cliente solo puede consultar
     if usuario["rol"] == "cliente":
         await msg.reply_text("Usá /resumen para consultar tus datos.")
         return
 
     sesion = get_sesion(chat_id)
 
-    # Sin sesión activa
     if not sesion or not sesion.get("lote_id"):
         await msg.reply_text(
-            "No hay sesión activa.\n"
-            "Usá /nuevolote para indicar cliente, campo y lote."
+            "No hay sesión activa.\nUsá /nuevolote para indicar cliente, campo y lote."
         )
         return
 
-    # Intentar parsear descarga estructurada
     patentes = parsear_patentes(texto)
     kg       = parsear_kg(texto)
 
     if kg and len(patentes) >= 2:
-        # Tiene todo — registrar directo
         chasis, acoplado = patentes[0], patentes[1]
         r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
         if r.data:
@@ -591,19 +585,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("sesion_activa").update({
             "destino": "camion", "camion_id": camion_id, "silo_id": None
         }).eq("chat_id", chat_id).execute()
-        sesion = get_sesion(chat_id)
+        sesion            = get_sesion(chat_id)
+        acumulado_antes   = kg_acumulado_camion(camion_id, chat_id)
         guardar_descarga(sesion, kg, usuario, ts)
-        await msg.reply_text(armar_confirmacion(sesion, kg), parse_mode="Markdown")
+        await msg.reply_text(armar_confirmacion(sesion, kg, acumulado_antes), parse_mode="Markdown")
         return
 
     if kg and sesion.get("destino"):
-        # Tiene kg y hay destino activo — registrar directo
+        destino = sesion.get("destino")
+        if destino == "camion":
+            acumulado_antes = kg_acumulado_camion(sesion["camion_id"], chat_id)
+        else:
+            acumulado_antes = kg_acumulado_silo(sesion["silo_id"]) if sesion.get("silo_id") else 0
         guardar_descarga(sesion, kg, usuario, ts)
-        await msg.reply_text(armar_confirmacion(sesion, kg), parse_mode="Markdown")
+        await msg.reply_text(armar_confirmacion(sesion, kg, acumulado_antes), parse_mode="Markdown")
         return
 
     if kg and not sesion.get("destino"):
-        # Tiene kg pero no hay destino definido
         teclado = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚛 Camión",    callback_data=f"dest_kg_{kg}_camion")],
             [InlineKeyboardButton("🌾 Silobolsa", callback_data=f"dest_kg_{kg}_silo")],
@@ -614,7 +612,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Mensaje libre — consultar Claude
     respuesta = consultar_claude_libre(texto, sesion, usuario)
     await msg.reply_text(respuesta, parse_mode="Markdown")
 
@@ -641,12 +638,14 @@ async def destino_kg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             }).eq("chat_id", chat_id).execute()
         else:
             supabase.table("sesion_activa").update({"destino": "silo"}).eq("chat_id", chat_id).execute()
+        acumulado_antes = kg_acumulado_silo(sesion.get("silo_id") or 0)
     else:
         supabase.table("sesion_activa").update({"destino": "camion"}).eq("chat_id", chat_id).execute()
+        acumulado_antes = kg_acumulado_camion(sesion["camion_id"], chat_id) if sesion.get("camion_id") else 0
 
     sesion = get_sesion(chat_id)
     guardar_descarga(sesion, kg, usuario, ts)
-    await query.edit_message_text(armar_confirmacion(sesion, kg), parse_mode="Markdown")
+    await query.edit_message_text(armar_confirmacion(sesion, kg, acumulado_antes), parse_mode="Markdown")
 
 # ── Main ─────────────────────────────────────────────────────
 if __name__ == "__main__":
