@@ -293,6 +293,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
                 f"🔑 Ver código: {op['codigo_acceso']}",
                 callback_data=f"op_vercodigo_{op_id}"
             )])
+        botones.append([InlineKeyboardButton("✏️ Modificar nombre",  callback_data=f"op_editar_{op_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar operario", callback_data=f"op_eliminar_{op_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",            callback_data="cont_ver_op")])
         await query.edit_message_text(
@@ -317,6 +318,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
                 f"🔑 Ver código: {cli['codigo_acceso']}",
                 callback_data=f"cli_vercodigo_{cli_id}"
             )])
+        botones.append([InlineKeyboardButton("✏️ Modificar nombre", callback_data=f"cli_editar_{cli_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar cliente", callback_data=f"cli_eliminar_{cli_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",           callback_data="cont_ver_cli")])
         await query.edit_message_text(
@@ -362,9 +364,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         op_id = int(accion.replace("op_confirmar_eliminar_", ""))
         r     = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else ""
-        supabase.table("usuarios").update({
-            "telegram_id": None, "activo": False, "codigo_acceso": None
-        }).eq("id", op_id).execute()
+        supabase.table("usuarios").delete().eq("id", op_id).execute()
         await query.edit_message_text(
             f"✅ Operario *{nombre}* eliminado.",
             parse_mode="Markdown",
@@ -392,9 +392,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         cli_id = int(accion.replace("cli_confirmar_eliminar_", ""))
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
-        supabase.table("clientes").update({
-            "telegram_id": None, "codigo_acceso": None
-        }).eq("id", cli_id).execute()
+        supabase.table("clientes").delete().eq("id", cli_id).execute()
         await query.edit_message_text(
             f"✅ Cliente *{nombre}* eliminado.",
             parse_mode="Markdown",
@@ -403,6 +401,20 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
 
     # ── Agregar ──────────────────────────────────────────────
+    elif accion.startswith("op_editar_"):
+        op_id = int(accion.replace("op_editar_", ""))
+        context.user_data["editando_op_id"] = op_id
+        context.user_data["contratista_id"] = cont["id"]
+        await query.edit_message_text("¿Cuál es el nuevo nombre del operario?")
+        return ADD_OP_NOMBRE
+
+    elif accion.startswith("cli_editar_"):
+        cli_id = int(accion.replace("cli_editar_", ""))
+        context.user_data["editando_cli_id"] = cli_id
+        context.user_data["contratista_id"]  = cont["id"]
+        await query.edit_message_text("¿Cuál es el nuevo nombre del cliente?")
+        return ADD_CLI_NOMBRE
+  
     elif accion == "cont_add_op":
         await query.edit_message_text("¿Nombre y apellido del operario?")
         context.user_data["contratista_id"] = cont["id"]
@@ -428,13 +440,27 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
 
 # ── Agregar operario ─────────────────────────────────────────
 async def add_op_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["nuevo_nombre"] = update.message.text.strip()
+    nombre         = update.message.text.strip()
+    contratista_id = context.user_data["contratista_id"]
+    uid            = str(update.effective_user.id)
+
+    if "editando_op_id" in context.user_data:
+        op_id = context.user_data.pop("editando_op_id")
+        supabase.table("usuarios").update({"nombre": nombre.split()[0]}).eq("id", op_id).execute()
+        await update.message.reply_text(
+            f"✅ Nombre actualizado a *{nombre}*.",
+            parse_mode="Markdown",
+            reply_markup=teclado_menu_contratista(contratista_id, uid)
+        )
+        return ConversationHandler.END
+
+    context.user_data["nuevo_nombre"] = nombre
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Sí, soy yo",         callback_data="op_soy_yo")],
         [InlineKeyboardButton("❌ No, es otra persona", callback_data="op_otro")],
     ])
     await update.message.reply_text(
-        f"¿El operario *{context.user_data['nuevo_nombre']}* sos vos mismo?",
+        f"¿El operario *{nombre}* sos vos mismo?",
         parse_mode="Markdown", reply_markup=teclado
     )
     return ADD_OP_SOY_YO
