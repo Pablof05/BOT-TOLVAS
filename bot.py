@@ -121,6 +121,248 @@ def guardar_descarga(sesion, kg, usuario, ts):
     }
     supabase.table("descargas").insert(data).execute()
 
+# ── Herramientas reales para Claude ─────────────────────────
+def tool_descargas_hoy(chat_id: str, cliente_id: int = None) -> str:
+    desde = ahora().replace(hour=0, minute=0, second=0, microsecond=0)
+    q = (supabase.table("descargas")
+         .select("kg, destino, created_at, camiones(patente_chasis,patente_acoplado), silobolsas(numero), clientes(nombre,apellido), lotes(nombre)")
+         .eq("chat_id", chat_id)
+         .gte("created_at", desde.isoformat())
+         .order("created_at", desc=False))
+    if cliente_id:
+        q = q.eq("cliente_id", cliente_id)
+    res = q.execute()
+    if not res.data:
+        return "No hay descargas registradas hoy."
+    lineas = [f"📋 Descargas de hoy ({len(res.data)} total)\n"]
+    total = 0
+    for d in res.data:
+        hora = datetime.fromisoformat(d["created_at"]).astimezone(ARG).strftime("%H:%M")
+        kg   = float(d["kg"])
+        total += kg
+        if d["destino"] == "camion":
+            c = d.get("camiones") or {}
+            dest = f"🚛 {c.get('patente_chasis','')} / {c.get('patente_acoplado','')}"
+        else:
+            s    = d.get("silobolsas") or {}
+            dest = f"🌾 Silo #{s.get('numero','?')}"
+        lote = (d.get("lotes") or {}).get("nombre", "")
+        lineas.append(f"{hora} — {dest} — {kg:,.0f} kg {f'({lote})' if lote else ''}")
+    lineas.append(f"\nTotal: *{total:,.0f} kg*")
+    return "\n".join(lineas)
+
+def tool_estado_camion(patente: str, chat_id: str) -> str:
+    patente = patente.upper().replace(" ", "")
+    r = supabase.table("camiones").select("*").eq("patente_chasis", patente).execute()
+    if not r.data:
+        r = supabase.table("camiones").select("*").eq("patente_acoplado", patente).execute()
+    if not r.data:
+        return f"No encontré el camión con patente {patente}."
+    camion    = r.data[0]
+    acumulado = kg_acumulado_camion(camion["id"], chat_id)
+    capacidad = camion.get("capacidad_kg")
+    lineas    = [f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*",
+                 f"Acumulado: *{acumulado:,.0f} kg*"]
+    if capacidad:
+        faltan = max(capacidad - acumulado, 0)
+        lineas.append(barra(acumulado, capacidad))
+        lineas.append(f"Capacidad: {capacidad:,.0f} kg — Faltan: {faltan:,.0f} kg")
+    return "\n".join(lineas)
+
+def tool_resumen_periodo(chat_id: str, periodo: str, cliente_id: int = None) -> str:
+    ahora_ts = ahora()
+    if periodo == "mes":
+        desde  = ahora_ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        titulo = f"Mes {ahora_ts.strftime('%B %Y')}"
+    elif periodo == "semana":
+        desde  = ahora_ts - timedelta(days=7)
+        titulo = "Últimos 7 días"
+    else:
+        desde  = ahora_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        titulo = f"Hoy {ahora_ts.strftime('%d/%m/%Y')}"
+
+    q = (supabase.table("descargas")
+         .select("kg, destino, camion_id, silobolsa_id, cliente_id, clientes(nombre,apellido), lotes(nombre), camiones(patente_chasis,patente_acoplado)")
+         .gte("created_at", desde.isoformat()))
+    if cliente_id:
+        q = q.eq("cliente_id", cliente_id)
+    res = q.order("created_at", desc=True).execute()
+
+    if not res.data:
+        return f"Sin registros para {titulo}."
+
+    total_kg     = sum(float(r["kg"]) for r in res.data)
+    camiones_set = {r["camion_id"]    for r in res.data if r["camion_id"]}
+    silos_set    = {r["silobolsa_id"] for r in res.data if r["silobolsa_id"]}
+
+    lineas = [f"📊 *{titulo}*\n",
+              f"Total: *{total_kg:,.0f} kg*",
+              f"Camiones: {len(camiones_set)}  |  Silobolsas: {len(silos_set)}",
+              f"Descargas: {len(res.data)}\n"]
+
+    clientes = {}
+    for r in res.data:
+        c      = r.get("clientes")
+        nombre = f"{c['nombre']} {c['apellido']}" if c else "Sin cliente"
+        clientes[nombre] = clientes.get(nombre, 0) + float(r["kg"])
+    for nombre, kg in sorted(clientes.items()):
+        lineas.append(f"👤 *{nombre}*: {kg:,.0f} kg")
+    return "\n".join(lineas)
+
+def tool_camiones_del_dia(chat_id: str) -> str:
+    desde = ahora().replace(hour=0, minute=0, second=0, microsecond=0)
+    r = (supabase.table("descargas")
+         .select("camion_id, kg, camiones(patente_chasis,patente_acoplado,capacidad_kg)")
+         .eq("chat_id", chat_id)
+         .eq("destino", "camion")
+         .gte("created_at", desde.isoformat())
+         .execute())
+    if not r.data:
+        return "No pasó ningún camión hoy."
+    camiones = {}
+    for d in r.data:
+        cid = d["camion_id"]
+        c   = d.get("camiones") or {}
+        if cid not in camiones:
+            camiones[cid] = {
+                "chasis":    c.get("patente_chasis", "?"),
+                "acoplado":  c.get("patente_acoplado", "?"),
+                "capacidad": c.get("capacidad_kg"),
+                "kg":        0
+            }
+        camiones[cid]["kg"] += float(d["kg"])
+    lineas = [f"🚛 Camiones de hoy ({len(camiones)})\n"]
+    for v in camiones.values():
+        cap_str = f" / {v['capacidad']:,.0f} kg" if v["capacidad"] else ""
+        lineas.append(f"{v['chasis']} / {v['acoplado']} — {v['kg']:,.0f} kg{cap_str}")
+    return "\n".join(lineas)
+
+# ── Detectar intención antes de llamar a Claude ──────────────
+INTENCIONES_LOTE = ["cambiar lote", "nuevo lote", "cambiar de lote", "otro lote", "lote nuevo"]
+INTENCIONES_CAMION = ["cambiar camion", "nuevo camion", "cambiar de camion", "otro camion"]
+INTENCIONES_SILO = ["nuevo silo", "cambiar silo", "otro silo", "silobolsa nuevo"]
+
+def detectar_intencion(texto: str) -> str | None:
+    t = texto.lower()
+    if any(i in t for i in INTENCIONES_LOTE):   return "nuevolote"
+    if any(i in t for i in INTENCIONES_CAMION): return "nuevocamion"
+    if any(i in t for i in INTENCIONES_SILO):   return "nuevosilo"
+    return None
+
+# ── Claude con herramientas reales ───────────────────────────
+TOOLS = [
+    {
+        "name": "descargas_hoy",
+        "description": "Muestra todas las descargas registradas hoy con hora, destino y kg",
+        "input_schema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "camiones_del_dia",
+        "description": "Lista todos los camiones que pasaron hoy con sus kg acumulados",
+        "input_schema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "estado_camion",
+        "description": "Muestra el estado actual de un camión específico: kg acumulados y capacidad",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patente": {"type": "string", "description": "Patente del chasis o acoplado"}
+            },
+            "required": ["patente"]
+        }
+    },
+    {
+        "name": "resumen_periodo",
+        "description": "Resumen de kg totales por período: hoy, semana o mes",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "periodo": {"type": "string", "enum": ["hoy", "semana", "mes"]}
+            },
+            "required": ["periodo"]
+        }
+    },
+]
+
+def consultar_claude_con_tools(mensaje: str, sesion, usuario, chat_id: str) -> str:
+    sesion_str = "Sin sesión activa."
+    if sesion and sesion.get("lote_id"):
+        cliente_obj = sesion.get("clientes") or {}
+        camion_obj  = sesion.get("camiones") or {}
+        silo_obj    = sesion.get("silobolsas") or {}
+        destino     = sesion.get("destino") or "no definido"
+        dest_detalle = ""
+        if destino == "camion" and camion_obj:
+            dest_detalle = f" ({camion_obj.get('patente_chasis','')} / {camion_obj.get('patente_acoplado','')})"
+        elif destino == "silo" and silo_obj:
+            dest_detalle = f" (Silo #{silo_obj.get('numero','?')})"
+        sesion_str = (
+            f"Cliente: {cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}, "
+            f"Campo: {(sesion.get('campos') or {}).get('nombre','')}, "
+            f"Lote: {(sesion.get('lotes') or {}).get('nombre','')}, "
+            f"Destino: {destino}{dest_detalle}"
+        )
+
+    system = (
+        "Sos el asistente de un sistema de tolvas agrícolas argentino. "
+        "Respondé siempre en español rioplatense, breve y sin bullets ni listas. "
+        "Cuando necesites datos reales de la base de datos, usá las herramientas disponibles. "
+        "Nunca inventes datos — si no tenés la info, usá una herramienta para buscarla. "
+        f"Sesión activa: {sesion_str}. "
+        f"Usuario: {usuario['nombre']} ({usuario['rol']})."
+    )
+
+    messages = [{"role": "user", "content": mensaje}]
+
+    try:
+        resp = claude.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=512,
+            system=system,
+            tools=TOOLS,
+            messages=messages
+        )
+
+        # Si Claude quiere usar una herramienta
+        while resp.stop_reason == "tool_use":
+            tool_use = next(b for b in resp.content if b.type == "tool_use")
+            tool_name  = tool_use.name
+            tool_input = tool_use.input
+
+            # Ejecutar herramienta real
+            if tool_name == "descargas_hoy":
+                result = tool_descargas_hoy(chat_id)
+            elif tool_name == "camiones_del_dia":
+                result = tool_camiones_del_dia(chat_id)
+            elif tool_name == "estado_camion":
+                result = tool_estado_camion(tool_input.get("patente",""), chat_id)
+            elif tool_name == "resumen_periodo":
+                result = tool_resumen_periodo(chat_id, tool_input.get("periodo","hoy"))
+            else:
+                result = "Herramienta no disponible."
+
+            # Mandar resultado de vuelta a Claude
+            messages = messages + [
+                {"role": "assistant", "content": resp.content},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": result}]}
+            ]
+            resp = claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=512,
+                system=system,
+                tools=TOOLS,
+                messages=messages
+            )
+
+        # Respuesta final en texto
+        texto_resp = next((b.text for b in resp.content if hasattr(b, "text")), "")
+        return texto_resp.strip()
+
+    except Exception as e:
+        logging.error(f"Error Claude: {e}")
+        return "No pude procesar eso. Intentá de nuevo."
+
 # ── /start ───────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = str(update.effective_user.id)
@@ -132,7 +374,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return ConversationHandler.END
-
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("👷 Operario de tolva",      callback_data="rol_operario")],
         [InlineKeyboardButton("👤 Cliente / dueño granos", callback_data="rol_cliente")],
@@ -161,7 +402,7 @@ async def recibir_nombre_registro(update: Update, context: ContextTypes.DEFAULT_
         "telegram_id": uid, "nombre": nombre, "rol": rol, "activo": True
     }).execute()
     msgs = {
-        "operario":  "Cuando quieras cargar una descarga mandame la patente del chasis, acoplado y los kg.\nEj: `AB123CD XY456ZW 5400kg`",
+        "operario":  "Cuando quieras cargar una descarga mandame patente chasis, acoplado y kg.\nEj: `AB123CD XY456ZW 5400kg`",
         "cliente":   "Podés pedirme el resumen de tus granos cuando quieras con /resumen.",
         "encargado": "Tenés acceso completo. Usá /ayuda para ver todo."
     }
@@ -182,10 +423,8 @@ async def cmd_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if rol == "operario":
         texto = (
             "🌾 *Comandos operario*\n\n"
-            "*Registrar descarga a camión:*\n"
-            "`AB123CD XY456ZW 5400kg`\n\n"
-            "*Registrar descarga a silobolsa:*\n"
-            "`5400kg`\n\n"
+            "Registrar descarga a camión: `AB123CD XY456ZW 5400kg`\n"
+            "Registrar descarga a silobolsa: `5400kg`\n\n"
             "/nuevolote — cambiar cliente, campo y lote\n"
             "/nuevocamion — cambiar camión activo\n"
             "/nuevosilo — abrir silobolsa nuevo\n"
@@ -285,7 +524,6 @@ async def lote_recibir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         nuevo = supabase.table("lotes").insert({"nombre": texto, "campo_id": campo_id}).execute()
         context.user_data["lote_id"] = nuevo.data[0]["id"]
-
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚛 Camión",    callback_data="dest_camion")],
         [InlineKeyboardButton("🌾 Silobolsa", callback_data="dest_silo")],
@@ -300,7 +538,6 @@ async def lote_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
     query   = update.callback_query
     await query.answer()
     chat_id = str(update.effective_chat.id)
-
     supabase.table("sesion_activa").upsert({
         "chat_id":     chat_id,
         "cliente_id":  context.user_data["cliente_id"],
@@ -309,7 +546,6 @@ async def lote_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         "destino":     None, "camion_id": None, "silo_id": None,
         "iniciada_at": ahora().isoformat()
     }).execute()
-
     if query.data == "dest_silo":
         lote_id = context.user_data["lote_id"]
         r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
@@ -323,7 +559,6 @@ async def lote_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown"
         )
         return ConversationHandler.END
-
     await query.edit_message_text("¿Patente del *chasis*? (ej: AB123CD)", parse_mode="Markdown")
     return LOTE_CHASIS
 
@@ -341,7 +576,7 @@ async def lote_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_TY
     return LOTE_CAPACIDAD
 
 async def lote_recibir_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id  = str(update.effective_chat.id)
+    chat_id = str(update.effective_chat.id)
     try:
         cap = float(update.message.text.strip().replace('.','').replace(',','.'))
     except ValueError:
@@ -393,7 +628,7 @@ async def camion_recibir_acoplado(update: Update, context: ContextTypes.DEFAULT_
     return CAMION_CAPACIDAD
 
 async def camion_recibir_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id  = str(update.effective_chat.id)
+    chat_id = str(update.effective_chat.id)
     try:
         cap = float(update.message.text.strip().replace('.','').replace(',','.'))
     except ValueError:
@@ -452,10 +687,8 @@ async def cmd_camion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id   = str(update.effective_chat.id)
     acumulado = kg_acumulado_camion(camion["id"], chat_id)
     capacidad = camion.get("capacidad_kg")
-    lineas    = [
-        f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*",
-        f"Acumulado: *{acumulado:,.0f} kg*"
-    ]
+    lineas    = [f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*",
+                 f"Acumulado: *{acumulado:,.0f} kg*"]
     if capacidad:
         faltan = max(capacidad - acumulado, 0)
         lineas.append(barra(acumulado, capacidad))
@@ -470,79 +703,13 @@ async def cmd_resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Primero registrate con /start.")
         return
     args     = " ".join(context.args).lower() if context.args else ""
-    ahora_ts = ahora()
-    if "mes" in args:
-        desde  = ahora_ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        titulo = f"Mes {ahora_ts.strftime('%B %Y')}"
-    elif "semana" in args:
-        desde  = ahora_ts - timedelta(days=7)
-        titulo = "Últimos 7 días"
-    else:
-        desde  = ahora_ts.replace(hour=0, minute=0, second=0, microsecond=0)
-        titulo = f"Hoy {ahora_ts.strftime('%d/%m/%Y')}"
-
-    q = (supabase.table("descargas")
-         .select("kg, destino, camion_id, silobolsa_id, cliente_id, clientes(nombre,apellido)")
-         .gte("created_at", desde.isoformat()))
-    if usuario["rol"] == "cliente":
-        q = q.eq("cliente_id", usuario.get("cliente_id"))
-    res = q.order("created_at", desc=True).execute()
-
-    if not res.data:
-        await update.message.reply_text(f"Sin registros para {titulo}.")
-        return
-
-    total_kg     = sum(float(r["kg"]) for r in res.data)
-    camiones_set = {r["camion_id"]    for r in res.data if r["camion_id"]}
-    silos_set    = {r["silobolsa_id"] for r in res.data if r["silobolsa_id"]}
-    lineas = [
-        f"📊 *{titulo}*\n",
-        f"Total: *{total_kg:,.0f} kg*",
-        f"Camiones: {len(camiones_set)}  |  Silobolsas: {len(silos_set)}",
-        f"Descargas: {len(res.data)}\n"
-    ]
-    if usuario["rol"] == "encargado":
-        clientes = {}
-        for r in res.data:
-            c      = r.get("clientes")
-            nombre = f"{c['nombre']} {c['apellido']}" if c else "Sin cliente"
-            clientes[nombre] = clientes.get(nombre, 0) + float(r["kg"])
-        for nombre, kg in sorted(clientes.items()):
-            lineas.append(f"👤 *{nombre}*: {kg:,.0f} kg")
-    await update.message.reply_text("\n".join(lineas), parse_mode="Markdown")
-
-# ── Claude para mensajes ambiguos ────────────────────────────
-def consultar_claude_libre(mensaje: str, sesion, usuario) -> str:
-    sesion_str = "Sin sesión activa."
-    if sesion and sesion.get("lote_id"):
-        cliente_obj = sesion.get("clientes") or {}
-        sesion_str  = (
-            f"Cliente: {cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}, "
-            f"Campo: {(sesion.get('campos') or {}).get('nombre','')}, "
-            f"Lote: {(sesion.get('lotes') or {}).get('nombre','')}, "
-            f"Destino: {sesion.get('destino') or 'no definido'}"
-        )
-    system = (
-        "Sos el asistente de un sistema de tolvas agrícolas argentino. "
-        "Respondé siempre en español rioplatense, breve y directo. "
-        f"Sesión activa: {sesion_str}. "
-        f"Usuario: {usuario['nombre']} ({usuario['rol']}). "
-        "Si el mensaje es un saludo o consulta general, respondé amigablemente. "
-        "Si parece que quiere registrar una descarga pero le falta info, "
-        "decile exactamente qué formato usar: patente chasis, patente acoplado y kg. "
-        "Nunca inventes datos ni hagas preguntas de más."
+    chat_id  = str(update.effective_chat.id)
+    periodo  = "mes" if "mes" in args else "semana" if "semana" in args else "hoy"
+    cliente_id = usuario.get("cliente_id") if usuario["rol"] == "cliente" else None
+    await update.message.reply_text(
+        tool_resumen_periodo(chat_id, periodo, cliente_id),
+        parse_mode="Markdown"
     )
-    try:
-        resp = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=256,
-            system=system,
-            messages=[{"role": "user", "content": mensaje}]
-        )
-        return resp.content[0].text.strip()
-    except Exception as e:
-        logging.error(f"Error Claude: {e}")
-        return "No entendí el mensaje. Usá el formato: `AB123CD XY456ZW 5400kg`"
 
 # ── Handler principal ────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -558,10 +725,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if usuario["rol"] == "cliente":
-        await msg.reply_text("Usá /resumen para consultar tus datos.")
+        respuesta = consultar_claude_con_tools(texto, get_sesion(chat_id), usuario, chat_id)
+        await msg.reply_text(respuesta, parse_mode="Markdown")
         return
 
     sesion = get_sesion(chat_id)
+
+    # Detectar intenciones de cambio estructurado
+    intencion = detectar_intencion(texto)
+    if intencion == "nuevolote":
+        await cmd_nuevolote(update, context)
+        return
+    if intencion == "nuevocamion":
+        await cmd_nuevocamion(update, context)
+        return
+    if intencion == "nuevosilo":
+        await cmd_nuevosilo(update, context)
+        return
 
     if not sesion or not sesion.get("lote_id"):
         await msg.reply_text(
@@ -572,6 +752,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patentes = parsear_patentes(texto)
     kg       = parsear_kg(texto)
 
+    # Descarga con patentes explícitas
     if kg and len(patentes) >= 2:
         chasis, acoplado = patentes[0], patentes[1]
         r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
@@ -585,22 +766,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table("sesion_activa").update({
             "destino": "camion", "camion_id": camion_id, "silo_id": None
         }).eq("chat_id", chat_id).execute()
-        sesion            = get_sesion(chat_id)
-        acumulado_antes   = kg_acumulado_camion(camion_id, chat_id)
+        sesion          = get_sesion(chat_id)
+        acumulado_antes = kg_acumulado_camion(camion_id, chat_id)
         guardar_descarga(sesion, kg, usuario, ts)
         await msg.reply_text(armar_confirmacion(sesion, kg, acumulado_antes), parse_mode="Markdown")
         return
 
+    # Descarga con destino activo
     if kg and sesion.get("destino"):
         destino = sesion.get("destino")
-        if destino == "camion":
-            acumulado_antes = kg_acumulado_camion(sesion["camion_id"], chat_id)
-        else:
-            acumulado_antes = kg_acumulado_silo(sesion["silo_id"]) if sesion.get("silo_id") else 0
+        acumulado_antes = (
+            kg_acumulado_camion(sesion["camion_id"], chat_id) if destino == "camion"
+            else kg_acumulado_silo(sesion["silo_id"]) if sesion.get("silo_id") else 0
+        )
         guardar_descarga(sesion, kg, usuario, ts)
         await msg.reply_text(armar_confirmacion(sesion, kg, acumulado_antes), parse_mode="Markdown")
         return
 
+    # Solo kg sin destino
     if kg and not sesion.get("destino"):
         teclado = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚛 Camión",    callback_data=f"dest_kg_{kg}_camion")],
@@ -612,7 +795,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    respuesta = consultar_claude_libre(texto, sesion, usuario)
+    # Mensaje libre → Claude con herramientas
+    respuesta = consultar_claude_con_tools(texto, sesion, usuario, chat_id)
     await msg.reply_text(respuesta, parse_mode="Markdown")
 
 async def destino_kg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
