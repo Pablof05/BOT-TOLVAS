@@ -120,6 +120,14 @@ def barra(actual, total):
     llenos = int(pct * 20)
     return "█" * llenos + "░" * (20 - llenos) + f" {pct*100:.0f}%"
 
+def tiene_descargas_operario(operario_id: int) -> bool:
+    r = supabase.table("descargas").select("id").eq("operario_id", operario_id).limit(1).execute()
+    return bool(r.data)
+
+def tiene_descargas_cliente(cliente_id: int) -> bool:
+    r = supabase.table("descargas").select("id").eq("cliente_id", cliente_id).limit(1).execute()
+    return bool(r.data)
+
 def parsear_kg(texto: str):
     t = texto.upper()
     m = re.search(r'(\d[\d\.,]*)\s*(?:KGS?|KL|KILO|TON(?:ES|S)?)?', t)
@@ -199,6 +207,8 @@ def teclado_menu_contratista(contratista_id: int, telegram_id: str):
     botones   = [
         [InlineKeyboardButton(f"👷 Mis operarios ({len(operarios)})", callback_data="cont_ver_op")],
         [InlineKeyboardButton(f"👤 Mis clientes ({len(clientes)})",   callback_data="cont_ver_cli")],
+        [InlineKeyboardButton("🚛 Mis camiones",  callback_data="op_camiones"),
+         InlineKeyboardButton("🌾 Mis silobolsas", callback_data="op_silos")],
         [InlineKeyboardButton("📊 Mis descargas",                     callback_data="cont_ver_desc")],
     ]
     if es_operario(telegram_id):
@@ -210,6 +220,12 @@ def teclado_menu_operario():
         [InlineKeyboardButton("📦 Agregar descarga", callback_data="op_descarga")],
         [InlineKeyboardButton("🚛 Mis camiones",     callback_data="op_camiones")],
         [InlineKeyboardButton("🌾 Mis silobolsas",   callback_data="op_silos")],
+        [InlineKeyboardButton("📊 Mis descargas",    callback_data="cont_ver_desc")],
+    ])
+
+def teclado_menu_cliente():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Mis descargas", callback_data="cli_ver_desc")],
     ])
 
 def teclado_roles():
@@ -243,9 +259,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cli:
         cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
         await update.message.reply_text(
-            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n"
-            "Próximamente podrás consultar tus datos desde acá.",
-            parse_mode="Markdown"
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown",
+            reply_markup=teclado_menu_cliente()
         )
         return ConversationHandler.END
     await update.message.reply_text(
@@ -373,8 +389,50 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
     cont   = get_contratista(uid)
     accion = query.data
 
-    if not cont:
+    # Acciones exclusivas para clientes (no requieren cont)
+    es_accion_cli = accion in ("cli_ver_desc", "cli_menu")
+    # Acciones de "Mis descargas" para operarios/contratistas
+    es_accion_desc = (accion == "cont_ver_desc" or accion.startswith("cont_desc_"))
+
+    contratista_id = cont["id"] if cont else (get_contratista_id_de_usuario(uid) if es_accion_desc else None)
+
+    if not cont and not es_accion_desc and not es_accion_cli:
         await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+        return ConversationHandler.END
+
+    if es_accion_desc and not cont and not contratista_id:
+        await query.edit_message_text("No se encontró tu contratista. Escribí /start.")
+        return ConversationHandler.END
+
+    # ── Menú cliente ──────────────────────────────────────────
+    if accion == "cli_menu":
+        cli = get_cliente_by_telegram(uid)
+        if not cli:
+            await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+            return ConversationHandler.END
+        cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
+        await query.edit_message_text(
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown", reply_markup=teclado_menu_cliente()
+        )
+        return ConversationHandler.END
+
+    if accion == "cli_ver_desc":
+        cli = get_cliente_by_telegram(uid)
+        if not cli:
+            await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+            return ConversationHandler.END
+        campos  = get_campos(cli["id"])
+        botones = []
+        for c in campos:
+            botones.append([InlineKeyboardButton(f"🌿 {c['nombre']}", callback_data=f"cont_desc_campo_{c['id']}")])
+        if not campos:
+            botones.append([InlineKeyboardButton("(sin campos)", callback_data="cli_menu")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cli_menu")])
+        await query.edit_message_text(
+            "📊 *Mis descargas*\n¿En qué campo?",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
         return ConversationHandler.END
 
     if accion == "cont_ver_op":
@@ -465,11 +523,26 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         op_id  = int(accion.replace("op_eliminar_", ""))
         r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else "este operario"
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"op_confirmar_eliminar_{op_id}")],
-            [InlineKeyboardButton("❌ Cancelar",      callback_data=f"op_detalle_{op_id}")],
-        ])
-        await query.edit_message_text(f"¿Confirmar eliminación de *{nombre}*?", parse_mode="Markdown", reply_markup=teclado)
+        if tiene_descargas_operario(op_id):
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Quitar acceso al bot", callback_data=f"op_quitar_acceso_{op_id}")],
+                [InlineKeyboardButton("❌ Cancelar",              callback_data=f"op_detalle_{op_id}")],
+            ])
+            await query.edit_message_text(
+                f"⚠️ *{nombre}* tiene descargas registradas y no puede eliminarse.\n\n"
+                "Podés quitarle el acceso al bot. Si en el futuro querés restaurar su acceso, "
+                "se generará un nuevo código para compartirle.",
+                parse_mode="Markdown", reply_markup=teclado
+            )
+        else:
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"op_confirmar_eliminar_{op_id}")],
+                [InlineKeyboardButton("❌ Cancelar",      callback_data=f"op_detalle_{op_id}")],
+            ])
+            await query.edit_message_text(
+                f"¿Confirmar eliminación de *{nombre}*?",
+                parse_mode="Markdown", reply_markup=teclado
+            )
         return ConversationHandler.END
 
     elif accion.startswith("op_confirmar_eliminar_"):
@@ -477,18 +550,49 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else ""
         supabase.table("usuarios").delete().eq("id", op_id).execute()
-        await query.edit_message_text(f"✅ Operario *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        await query.edit_message_text(
+            f"✅ Operario *{nombre}* eliminado.",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("op_quitar_acceso_"):
+        op_id  = int(accion.replace("op_quitar_acceso_", ""))
+        r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
+        nombre = r.data[0]["nombre"] if r.data else ""
+        nuevo_codigo = generar_codigo()
+        supabase.table("usuarios").update({"telegram_id": None, "codigo_acceso": nuevo_codigo}).eq("id", op_id).execute()
+        await query.edit_message_text(
+            f"🚫 Acceso de *{nombre}* revocado.\n\n"
+            f"Si querés restaurar su acceso, compartile este código: *{nuevo_codigo}*",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
         return ConversationHandler.END
 
     elif accion.startswith("cli_eliminar_"):
         cli_id = int(accion.replace("cli_eliminar_", ""))
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else "este cliente"
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"cli_confirmar_eliminar_{cli_id}")],
-            [InlineKeyboardButton("❌ Cancelar",      callback_data=f"cli_detalle_{cli_id}")],
-        ])
-        await query.edit_message_text(f"¿Confirmar eliminación de *{nombre}*?", parse_mode="Markdown", reply_markup=teclado)
+        if tiene_descargas_cliente(cli_id):
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Quitar acceso al bot", callback_data=f"cli_quitar_acceso_{cli_id}")],
+                [InlineKeyboardButton("❌ Cancelar",              callback_data=f"cli_detalle_{cli_id}")],
+            ])
+            await query.edit_message_text(
+                f"⚠️ *{nombre}* tiene descargas registradas y no puede eliminarse.\n\n"
+                "Podés quitarle el acceso al bot. Si en el futuro querés restaurar su acceso, "
+                "se generará un nuevo código para compartirle.",
+                parse_mode="Markdown", reply_markup=teclado
+            )
+        else:
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"cli_confirmar_eliminar_{cli_id}")],
+                [InlineKeyboardButton("❌ Cancelar",      callback_data=f"cli_detalle_{cli_id}")],
+            ])
+            await query.edit_message_text(
+                f"¿Confirmar eliminación de *{nombre}*?",
+                parse_mode="Markdown", reply_markup=teclado
+            )
         return ConversationHandler.END
 
     elif accion.startswith("cli_confirmar_eliminar_"):
@@ -496,7 +600,23 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
         supabase.table("clientes").delete().eq("id", cli_id).execute()
-        await query.edit_message_text(f"✅ Cliente *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        await query.edit_message_text(
+            f"✅ Cliente *{nombre}* eliminado.",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cli_quitar_acceso_"):
+        cli_id = int(accion.replace("cli_quitar_acceso_", ""))
+        r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
+        nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
+        nuevo_codigo = generar_codigo()
+        supabase.table("clientes").update({"telegram_id": None, "codigo_acceso": nuevo_codigo}).eq("id", cli_id).execute()
+        await query.edit_message_text(
+            f"🚫 Acceso de *{nombre}* revocado.\n\n"
+            f"Si querés restaurar su acceso, compartile este código: *{nuevo_codigo}*",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
         return ConversationHandler.END
 
     elif accion.startswith("op_editar_"):
@@ -529,16 +649,17 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
 
     # ── Mis descargas ─────────────────────────────────────────
     elif accion == "cont_ver_desc":
-        clientes = get_clientes(cont["id"])
-        botones  = []
+        clientes   = get_clientes(contratista_id)
+        volver_cb  = "cont_volver" if cont else "op_menu"
+        botones    = []
         for c in clientes:
             botones.append([InlineKeyboardButton(
                 f"👤 {c['nombre']} {c['apellido']}", callback_data=f"cont_desc_cli_{c['id']}"
             )])
         if not clientes:
-            botones.append([InlineKeyboardButton("(sin clientes)", callback_data="cont_volver")])
+            botones.append([InlineKeyboardButton("(sin clientes)", callback_data=volver_cb)])
         botones.append([InlineKeyboardButton("📥 Exportar todo a Excel", callback_data="cont_desc_excel_todo")])
-        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_volver")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data=volver_cb)])
         await query.edit_message_text(
             "📊 *Mis descargas*\n¿Para qué cliente?",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
@@ -546,16 +667,19 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
 
     elif accion.startswith("cont_desc_cli_"):
-        cli_id = int(accion.replace("cont_desc_cli_", ""))
-        r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
+        cli_id     = int(accion.replace("cont_desc_cli_", ""))
+        r          = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         cli_nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else "Cliente"
+        # Si el usuario logueado es el mismo cliente, volver a su menú propio
+        cli_propio = get_cliente_by_telegram(uid)
+        volver_cb  = "cli_ver_desc" if (cli_propio and cli_propio["id"] == cli_id) else "cont_ver_desc"
         campos  = get_campos(cli_id)
         botones = []
         for c in campos:
             botones.append([InlineKeyboardButton(f"🌿 {c['nombre']}", callback_data=f"cont_desc_campo_{c['id']}")])
         if not campos:
-            botones.append([InlineKeyboardButton("(sin campos)", callback_data="cont_ver_desc")])
-        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_ver_desc")])
+            botones.append([InlineKeyboardButton("(sin campos)", callback_data=volver_cb)])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data=volver_cb)])
         await query.edit_message_text(
             f"📊 *{cli_nombre}*\n¿En qué campo?",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
@@ -641,7 +765,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         parte = accion.replace("cont_desc_excel_", "")
         await query.edit_message_text("⏳ Generando Excel, aguardá un momento...")
         if parte == "todo":
-            descargas = get_descargas_contratista(cont["id"])
+            descargas = get_descargas_contratista(contratista_id)
             filename  = "descargas_completo.xlsx"
             caption   = "📊 Reporte completo de descargas."
         else:
@@ -658,10 +782,12 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
             filename=filename,
             caption=caption
         )
+        menu_markup = (teclado_menu_contratista(contratista_id, uid) if cont
+                       else teclado_menu_operario())
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="¿Qué querés hacer?",
-            reply_markup=teclado_menu_contratista(cont["id"], uid)
+            reply_markup=menu_markup
         )
         return ConversationHandler.END
 
@@ -1557,7 +1683,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cli = get_cliente_by_telegram(uid)
     if cli:
         cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
-        await update.message.reply_text(f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\nPróximamente podrás consultar tus datos desde acá.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown", reply_markup=teclado_menu_cliente()
+        )
         return
     await update.message.reply_text(
         "No tenés permisos para acceder.\n\nSi sos contratista escribí /start.\nSi sos operario o cliente, ingresá el código que te dio tu contratista:"
@@ -1584,7 +1713,7 @@ if __name__ == "__main__":
     )
 
     menu_cont_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
+        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|cli_ver_desc|cli_menu|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_quitar_acceso_|cli_quitar_acceso_|op_editar_|cli_editar_)")],
         states={
             ADD_OP_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_op_nombre)],
             ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^(op_soy_yo|op_otro)$")],
