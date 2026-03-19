@@ -968,6 +968,40 @@ async def _guardar_camion_y_continuar(update, context, cap):
         parse_mode="Markdown"
     )
 
+async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cap_corregir":
+        await query.edit_message_text(
+            "¿Cuál es la capacidad correcta en kg? (ej: 30000)"
+        )
+        return DESC_CAMION_CAPACIDAD
+
+    # Confirma la capacidad inusual
+    cap = context.user_data["desc_cap_tmp"]
+    chasis         = context.user_data["desc_chasis_tmp"]
+    acoplado       = context.user_data["desc_acoplado_tmp"]
+    contratista_id = context.user_data["contratista_id"]
+    r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
+    if r.data:
+        camion_id = r.data[0]["id"]
+        supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
+    else:
+        nuevo     = supabase.table("camiones").insert({
+            "patente_chasis": chasis, "patente_acoplado": acoplado,
+            "capacidad_kg":   cap, "contratista_id": contratista_id
+        }).execute()
+        camion_id = nuevo.data[0]["id"]
+    context.user_data["desc_destino_id"]  = camion_id
+    context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
+    context.user_data["desc_capacidad"]   = cap
+    await query.edit_message_text(
+        f"🚛 Camión *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg?",
+        parse_mode="Markdown"
+    )
+    return DESC_KG
+
 async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg = parsear_kg(update.message.text)
     if not kg:
@@ -1370,7 +1404,10 @@ if __name__ == "__main__":
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
             DESC_CAMION_ACOPLADO: [CallbackQueryHandler(desc_camion_acoplado, pattern="^desc_acoplado_"),
                                    MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_acoplado)],
-            DESC_CAMION_CAPACIDAD:[MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_capacidad)],
+            DESC_CAMION_CAPACIDAD:[
+                MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_capacidad),
+                CallbackQueryHandler(desc_confirmar_capacidad, pattern="^cap_"),
+            ],
             DESC_KG:            [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
                                  CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$")],
         },
