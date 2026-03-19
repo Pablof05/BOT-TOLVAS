@@ -311,19 +311,21 @@ async def recibir_nombre_contratista(update: Update, context: ContextTypes.DEFAU
     cont = get_contratista(uid)
 
     # Crear usuario en Supabase Auth
-    email    = f"cont.{uid}@tolvas.app"
-    password = generar_password()
-    user_id  = crear_auth_usuario(email, password)
-    if user_id:
-        supabase.table("contratistas").update({"user_id": user_id}).eq("telegram_id", uid).execute()
-        creds_msg = (
-            f"\n\n📋 *Tus credenciales para el panel web:*\n"
-            f"Usuario: `{email}`\n"
-            f"Contraseña: `{password}`\n\n"
-            f"_Guardá estos datos, los vas a necesitar para entrar al panel._"
-        )
-    else:
-        creds_msg = ""
+    creds_msg = ""
+    try:
+        email    = f"cont.{uid}@tolvas.app"
+        password = generar_password()
+        user_id  = crear_auth_usuario(email, password)
+        if user_id:
+            supabase.table("contratistas").update({"user_id": user_id}).eq("telegram_id", uid).execute()
+            creds_msg = (
+                f"\n\n📋 *Tus credenciales para el panel web:*\n"
+                f"Usuario: `{email}`\n"
+                f"Contraseña: `{password}`\n\n"
+                f"_Guardá estos datos, los vas a necesitar para entrar al panel._"
+            )
+    except Exception as e:
+        logging.error(f"Error creando cuenta web para contratista: {e}")
 
     await update.message.reply_text(
         f"✅ Bienvenido *{nombre} {apellido}*! Quedaste registrado como contratista.{creds_msg}",
@@ -442,17 +444,21 @@ async def _vincular_usuario(uid, context, nombre_nuevo, query=None, msg=None, pa
         # Crear usuario en Supabase Auth si se proporcionó contraseña
         creds_msg = ""
         if password:
-            email   = context.user_data.pop("cli_email", f"cli.{uid}@tolvas.app")
-            user_id = crear_auth_usuario(email, password)
-            if user_id:
-                supabase.table("clientes").update({"user_id": user_id}).eq("id", rec_id).execute()
-                creds_msg = (
-                    f"\n\n📋 *Tus credenciales para el panel web:*\n"
-                    f"Email: `{email}`\n"
-                    f"Contraseña: la que elegiste\n\n"
-                    f"_Guardá estos datos para entrar al panel._"
-                )
-            else:
+            try:
+                email   = context.user_data.pop("cli_email", f"cli.{uid}@tolvas.app")
+                user_id = crear_auth_usuario(email, password)
+                if user_id:
+                    supabase.table("clientes").update({"user_id": user_id}).eq("id", rec_id).execute()
+                    creds_msg = (
+                        f"\n\n📋 *Tus credenciales para el panel web:*\n"
+                        f"Email: `{email}`\n"
+                        f"Contraseña: la que elegiste\n\n"
+                        f"_Guardá estos datos para entrar al panel._"
+                    )
+                else:
+                    creds_msg = "\n\n⚠️ No se pudo crear la cuenta del panel web. Contactá a tu contratista."
+            except Exception as e:
+                logging.error(f"Error creando cuenta web para cliente: {e}")
                 creds_msg = "\n\n⚠️ No se pudo crear la cuenta del panel web. Contactá a tu contratista."
 
         texto   = f"✅ Bienvenido *{nombre_final}*! Ya tenés acceso como cliente.{creds_msg}"
