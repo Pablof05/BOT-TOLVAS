@@ -1316,7 +1316,10 @@ if __name__ == "__main__":
     )
 
     descarga_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(iniciar_descarga, pattern="^op_descarga$")],
+        entry_points=[
+            CallbackQueryHandler(iniciar_descarga, pattern="^op_descarga$"),
+            CallbackQueryHandler(menu_operario_callback, pattern="^(desc_continuar$|desc_cambiar$)"),
+        ],
         states={
             DESC_CLIENTE:       [CallbackQueryHandler(desc_elegir_cliente,  pattern="^desc_cli_|^desc_nuevo_cliente$")],
             NUEVO_CLIENTE_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_cliente_nombre)],
