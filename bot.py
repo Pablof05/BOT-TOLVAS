@@ -28,8 +28,8 @@ ARG = timezone(timedelta(hours=-3))
     DESC_CAMION_CHASIS, DESC_CAMION_ACOPLADO, DESC_CAMION_CAPACIDAD,
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
-    REG_CLI_PASS,
-) = range(22)
+    REG_CLI_EMAIL, REG_CLI_PASS,
+) = range(23)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
@@ -382,10 +382,9 @@ async def confirmar_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CORREGIR_NOMBRE
     if context.user_data.get("codigo_encontrado_tipo") == "cliente":
         await query.edit_message_text(
-            "✅ Nombre confirmado.\n\nElegí una contraseña para ingresar al panel web "
-            "(mínimo 8 caracteres):"
+            "✅ Nombre confirmado.\n\nIngresá tu dirección de email para crear tu cuenta en el panel web:"
         )
-        return REG_CLI_PASS
+        return REG_CLI_EMAIL
     await _vincular_usuario(str(update.effective_user.id), context, None, query)
     return ConversationHandler.END
 
@@ -394,12 +393,20 @@ async def corregir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("codigo_encontrado_tipo") == "cliente":
         context.user_data["nombre_nuevo"] = nombre_nuevo
         await update.message.reply_text(
-            "✅ Nombre actualizado.\n\nElegí una contraseña para ingresar al panel web "
-            "(mínimo 8 caracteres):"
+            "✅ Nombre actualizado.\n\nIngresá tu dirección de email para crear tu cuenta en el panel web:"
         )
-        return REG_CLI_PASS
+        return REG_CLI_EMAIL
     await _vincular_usuario(str(update.effective_user.id), context, nombre_nuevo, None, update.message)
     return ConversationHandler.END
+
+async def recibir_email_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    email = update.message.text.strip()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        await update.message.reply_text("Email inválido. Ingresá un email correcto:")
+        return REG_CLI_EMAIL
+    context.user_data["cli_email"] = email
+    await update.message.reply_text("Elegí una contraseña para ingresar al panel web (mínimo 8 caracteres):")
+    return REG_CLI_PASS
 
 async def recibir_pass_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = update.message.text.strip()
@@ -435,15 +442,15 @@ async def _vincular_usuario(uid, context, nombre_nuevo, query=None, msg=None, pa
         # Crear usuario en Supabase Auth si se proporcionó contraseña
         creds_msg = ""
         if password:
-            email   = f"cli.{uid}@tolvas.app"
+            email   = context.user_data.pop("cli_email", f"cli.{uid}@tolvas.app")
             user_id = crear_auth_usuario(email, password)
             if user_id:
                 supabase.table("clientes").update({"user_id": user_id}).eq("id", rec_id).execute()
                 creds_msg = (
                     f"\n\n📋 *Tus credenciales para el panel web:*\n"
-                    f"Usuario: `{email}`\n"
+                    f"Email: `{email}`\n"
                     f"Contraseña: la que elegiste\n\n"
-                    f"_Guardá el usuario, lo vas a necesitar para entrar al panel._"
+                    f"_Guardá estos datos para entrar al panel._"
                 )
             else:
                 creds_msg = "\n\n⚠️ No se pudo crear la cuenta del panel web. Contactá a tu contratista."
@@ -1781,6 +1788,7 @@ if __name__ == "__main__":
             INGRESAR_CODIGO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_codigo)],
             CONFIRMAR_NOMBRE: [CallbackQueryHandler(confirmar_nombre, pattern="^nombre_")],
             CORREGIR_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_nombre)],
+            REG_CLI_EMAIL:    [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_email_cliente)],
             REG_CLI_PASS:     [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pass_cliente)],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
