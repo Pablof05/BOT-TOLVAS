@@ -1,97 +1,92 @@
+import { getUserProfile } from '../../lib/auth'
 import { createClient } from '../../lib/supabase-server'
-
-async function getContratistaId(supabase) {
-  const { data: { user } } = await supabase.auth.getUser()
-  const { data } = await supabase
-    .from('contratistas')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-  return data?.id
-}
-
-function StatCard({ label, value, icon, sub }) {
-  return (
-    <div className="bg-white rounded-2xl shadow p-5">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm text-gray-500 font-medium">{label}</span>
-        <span className="text-2xl">{icon}</span>
-      </div>
-      <p className="text-3xl font-bold text-gray-800">{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
-    </div>
-  )
-}
+import DashboardContratista from '../../components/DashboardContratista'
+import DashboardCliente from '../../components/DashboardCliente'
 
 export default async function DashboardPage() {
+  const userProfile = await getUserProfile()
   const supabase = createClient()
-  const contratistaId = await getContratistaId(supabase)
 
+  if (userProfile?.role === 'cliente') {
+    const clienteId = userProfile.profile.id
+
+    // Campos del cliente
+    const { data: campos } = await supabase
+      .from('campos')
+      .select('id, nombre')
+      .eq('cliente_id', clienteId)
+      .order('nombre')
+
+    const campoIds = campos?.map(c => c.id) ?? []
+
+    // Lotes con grano
+    const { data: lotes } = campoIds.length
+      ? await supabase
+          .from('lotes')
+          .select('id, nombre, grano, campo_id')
+          .in('campo_id', campoIds)
+          .order('nombre')
+      : { data: [] }
+
+    const loteIds = lotes?.map(l => l.id) ?? []
+
+    // Silobolsas
+    const { data: silobolsas } = loteIds.length
+      ? await supabase
+          .from('silobolsas')
+          .select('id, numero, cerrado, lote_id')
+          .in('lote_id', loteIds)
+      : { data: [] }
+
+    // Descargas del cliente (kg por silobolsa y por lote)
+    const { data: descargas } = await supabase
+      .from('descargas')
+      .select('kg, lote_id, campo_id, silobolsa_id, created_at')
+      .eq('cliente_id', clienteId)
+      .order('created_at', { ascending: false })
+
+    return (
+      <DashboardCliente
+        campos={campos ?? []}
+        lotes={lotes ?? []}
+        silobolsas={silobolsas ?? []}
+        descargas={descargas ?? []}
+        nombre={userProfile.profile.nombre}
+      />
+    )
+  }
+
+  // Vista contratista
+  const contratistaId = userProfile?.profile?.id
   if (!contratistaId) {
     return (
       <div className="text-center py-20 text-gray-500">
-        <p className="text-lg">No hay contratista vinculado a tu cuenta.</p>
-        <p className="text-sm mt-2">Pedile al administrador que vincule tu usuario.</p>
+        <p>No hay contratista vinculado a tu cuenta.</p>
       </div>
     )
   }
 
-  // KPIs en paralelo
   const [
     { data: camionesAbiertos },
     { data: camionesCerrados },
-    { data: silobolsas },
-    { data: descargas },
     { data: operarios },
     { data: clientes },
+    { data: descargas },
   ] = await Promise.all([
-    supabase.from('camiones').select('id, capacidad_kg').eq('contratista_id', contratistaId).eq('cerrado', false),
+    supabase.from('camiones').select('id').eq('contratista_id', contratistaId).eq('cerrado', false),
     supabase.from('camiones').select('id').eq('contratista_id', contratistaId).eq('cerrado', true),
-    supabase.from('silobolsas')
-      .select('id, cerrado, lotes!inner(campo_id, campos!inner(cliente_id, contratistas:clientes!inner(contratista_id)))')
-      .eq('lotes.campos.clientes.contratista_id', contratistaId),
-    supabase.from('descargas').select('kg, camiones!inner(contratista_id)').eq('camiones.contratista_id', contratistaId),
     supabase.from('usuarios').select('id').eq('contratista_id', contratistaId).eq('rol', 'operario'),
     supabase.from('clientes').select('id').eq('contratista_id', contratistaId),
+    supabase.from('descargas').select('kg').eq('contratista_id', contratistaId),
   ])
 
-  const totalKg = descargas?.reduce((acc, d) => acc + (d.kg || 0), 0) ?? 0
-  const toneladas = (totalKg / 1000).toLocaleString('es-AR', { maximumFractionDigits: 1 })
-
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Resumen general</h1>
-
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
-        <StatCard
-          label="Toneladas descargadas"
-          value={`${toneladas} t`}
-          icon="⚖️"
-          sub={`${descargas?.length ?? 0} viajes registrados`}
-        />
-        <StatCard
-          label="Camiones activos"
-          value={camionesAbiertos?.length ?? 0}
-          icon="🚛"
-          sub={`${camionesCerrados?.length ?? 0} cerrados`}
-        />
-        <StatCard
-          label="Silobolsas"
-          value={silobolsas?.length ?? 0}
-          icon="🌽"
-          sub={`${silobolsas?.filter(s => !s.cerrado).length ?? 0} abiertas`}
-        />
-        <StatCard
-          label="Clientes"
-          value={clientes?.length ?? 0}
-          icon="🧑‍🌾"
-        />
-        <StatCard
-          label="Operarios"
-          value={operarios?.length ?? 0}
-          icon="👷"
-        />
-      </div>
-    </div>
+    <DashboardContratista
+      camionesAbiertos={camionesAbiertos?.length ?? 0}
+      camionesCerrados={camionesCerrados?.length ?? 0}
+      operarios={operarios?.length ?? 0}
+      clientes={clientes?.length ?? 0}
+      descargas={descargas ?? []}
+    />
   )
 }

@@ -4,16 +4,24 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '../lib/supabase'
 
-const navItems = [
-  { href: '/dashboard',            label: 'Resumen',    icon: '📊' },
-  { href: '/dashboard/descargas',  label: 'Descargas',  icon: '🚜' },
-  { href: '/dashboard/camiones',   label: 'Camiones',   icon: '🚛' },
-  { href: '/dashboard/usuarios',   label: 'Usuarios',   icon: '👥' },
+const navContratista = [
+  { href: '/dashboard',           label: 'Resumen',   icon: '📊' },
+  { href: '/dashboard/descargas', label: 'Descargas', icon: '🚜' },
+  { href: '/dashboard/camiones',  label: 'Camiones',  icon: '🚛' },
+  { href: '/dashboard/usuarios',  label: 'Usuarios',  icon: '👥' },
 ]
 
-export default function Sidebar({ contratista }) {
+const navCliente = [
+  { href: '/dashboard',              label: 'Mis campos',  icon: '🌾' },
+  { href: '/dashboard/silobolsas',   label: 'Silobolsas', icon: '🌽' },
+  { href: '/dashboard/descargas',    label: 'Descargas',  icon: '🚜' },
+]
+
+export default function Sidebar({ role, profile }) {
   const pathname = usePathname()
   const router = useRouter()
+
+  const navItems = role === 'cliente' ? navCliente : navContratista
 
   async function handleLogout() {
     const supabase = createClient()
@@ -22,14 +30,19 @@ export default function Sidebar({ contratista }) {
     router.refresh()
   }
 
+  const displayName = profile
+    ? `${profile.nombre}${profile.apellido ? ' ' + profile.apellido : ''}`
+    : ''
+
   return (
-    <aside className="w-56 bg-green-800 text-white flex flex-col min-h-screen">
+    <aside className="w-56 bg-green-800 text-white flex flex-col min-h-screen shrink-0">
       <div className="p-5 border-b border-green-700">
         <p className="font-bold text-lg">🌾 Tolvas</p>
-        {contratista && (
-          <p className="text-green-300 text-sm mt-1 truncate">
-            {contratista.nombre} {contratista.apellido}
-          </p>
+        {displayName && (
+          <p className="text-green-300 text-sm mt-1 truncate">{displayName}</p>
+        )}
+        {role && (
+          <span className="text-xs text-green-400 capitalize">{role}</span>
         )}
       </div>
 
