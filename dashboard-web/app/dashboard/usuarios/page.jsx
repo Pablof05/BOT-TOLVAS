@@ -1,0 +1,125 @@
+import { createClient } from '../../../lib/supabase-server'
+
+async function getContratistaId(supabase) {
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data } = await supabase
+    .from('contratistas')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  return data?.id
+}
+
+function TagVinculado({ telegramId }) {
+  return telegramId
+    ? <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700">Vinculado ✓</span>
+    : <span className="px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-700">Sin vincular</span>
+}
+
+export default async function UsuariosPage({ searchParams }) {
+  const supabase = createClient()
+  const contratistaId = await getContratistaId(supabase)
+
+  const tab = searchParams?.tab || 'operarios'
+
+  const [{ data: operarios }, { data: clientes }] = await Promise.all([
+    supabase
+      .from('usuarios')
+      .select('id, nombre, rol, telegram_id, activo, codigo_acceso')
+      .eq('contratista_id', contratistaId)
+      .eq('rol', 'operario')
+      .order('nombre'),
+    supabase
+      .from('clientes')
+      .select('id, nombre, apellido, telegram_id, codigo_acceso')
+      .eq('contratista_id', contratistaId)
+      .order('nombre'),
+  ])
+
+  const isOperarios = tab === 'operarios'
+
+  return (
+    <div>
+      <h1 className="text-2xl font-bold text-gray-800 mb-6">Usuarios</h1>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-5">
+        <a
+          href="/dashboard/usuarios?tab=operarios"
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'
+          }`}
+        >
+          Operarios ({operarios?.length ?? 0})
+        </a>
+        <a
+          href="/dashboard/usuarios?tab=clientes"
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+            !isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'
+          }`}
+        >
+          Clientes ({clientes?.length ?? 0})
+        </a>
+      </div>
+
+      {isOperarios ? (
+        <div className="bg-white rounded-2xl shadow overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
+                <th className="px-4 py-3">Nombre</th>
+                <th className="px-4 py-3">Código de acceso</th>
+                <th className="px-4 py-3">Estado Telegram</th>
+                <th className="px-4 py-3">Activo</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {!operarios?.length ? (
+                <tr>
+                  <td colSpan={4} className="text-center py-10 text-gray-400">No hay operarios</td>
+                </tr>
+              ) : operarios.map(o => (
+                <tr key={o.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium">{o.nombre}</td>
+                  <td className="px-4 py-3 font-mono text-gray-500">{o.codigo_acceso || '-'}</td>
+                  <td className="px-4 py-3"><TagVinculado telegramId={o.telegram_id} /></td>
+                  <td className="px-4 py-3">
+                    {o.activo
+                      ? <span className="text-green-600 font-medium">Sí</span>
+                      : <span className="text-gray-400">No</span>
+                    }
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl shadow overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
+                <th className="px-4 py-3">Nombre</th>
+                <th className="px-4 py-3">Código de acceso</th>
+                <th className="px-4 py-3">Estado Telegram</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {!clientes?.length ? (
+                <tr>
+                  <td colSpan={3} className="text-center py-10 text-gray-400">No hay clientes</td>
+                </tr>
+              ) : clientes.map(c => (
+                <tr key={c.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium">{c.nombre} {c.apellido}</td>
+                  <td className="px-4 py-3 font-mono text-gray-500">{c.codigo_acceso || '-'}</td>
+                  <td className="px-4 py-3"><TagVinculado telegramId={c.telegram_id} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
