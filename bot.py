@@ -1335,6 +1335,7 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         return await mostrar_clientes(query, context, contratista_id, sesion)
 
     return ConversationHandler.END
+  
 # ── Resumen ──────────────────────────────────────────────────
 def get_resumen_lote(lote_id: int, desde=None):
     q = supabase.table("descargas").select(
@@ -1369,11 +1370,8 @@ def armar_texto_resumen(cliente_id: int, campo_id: int = None, lote_id: int = No
     lineas = [f"📊 *{titulo_periodo(periodo)}*\n"]
     total_general = 0
 
-    # Obtener campos a mostrar
     if lote_id:
-        r_lote  = supabase.table("lotes").select("*, campos(nombre, clientes(nombre,apellido))").eq("id", lote_id).execute()
-        lotes   = r_lote.data or []
-        campos_ids = [lotes[0]["campo_id"]] if lotes else []
+        campos_ids = [supabase.table("lotes").select("campo_id").eq("id", lote_id).execute().data[0]["campo_id"]]
     elif campo_id:
         campos_ids = [campo_id]
     else:
@@ -1381,11 +1379,10 @@ def armar_texto_resumen(cliente_id: int, campo_id: int = None, lote_id: int = No
         campos_ids = [c["id"] for c in (r_campos.data or [])]
 
     for cid in campos_ids:
-        r_campo = supabase.table("campos").select("nombre").eq("id", cid).execute()
+        r_campo      = supabase.table("campos").select("nombre").eq("id", cid).execute()
         campo_nombre = r_campo.data[0]["nombre"] if r_campo.data else "?"
         lineas.append(f"\n🌾 *Campo: {campo_nombre}*")
 
-        # Lotes del campo
         if lote_id:
             r_lotes = supabase.table("lotes").select("*").eq("id", lote_id).execute()
         else:
@@ -1394,13 +1391,10 @@ def armar_texto_resumen(cliente_id: int, campo_id: int = None, lote_id: int = No
         for lote in (r_lotes.data or []):
             descargas = get_resumen_lote(lote["id"], desde)
             if not descargas: continue
-
             total_lote = sum(float(d["kg"]) for d in descargas)
             total_general += total_lote
             grano = f" ({lote['grano']})" if lote.get("grano") else ""
             lineas.append(f"  🌱 *{lote['nombre']}{grano}* — {total_lote:,.0f} kg")
-
-            # Agrupar por camión
             camiones = {}
             silos    = {}
             for d in descargas:
@@ -1416,7 +1410,6 @@ def armar_texto_resumen(cliente_id: int, campo_id: int = None, lote_id: int = No
                     if sid not in silos:
                         silos[sid] = {"numero": s.get("numero","?"), "kg": 0}
                     silos[sid]["kg"] += float(d["kg"])
-
             for v in camiones.values():
                 lineas.append(f"    🚛 {v['chasis']} / {v['acoplado']} — {v['kg']:,.0f} kg")
             for v in silos.values():
@@ -1425,21 +1418,21 @@ def armar_texto_resumen(cliente_id: int, campo_id: int = None, lote_id: int = No
     lineas.append(f"\n*Total: {total_general:,.0f} kg*")
     return "\n".join(lineas)
 
-async def res_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
-    await query.answer()
-    uid     = str(update.effective_user.id)
+def teclado_volver_menu(uid: str):
+    cont = get_contratista(uid)
+    return InlineKeyboardMarkup([[btn_cancelar("op_menu")]])
 
-    teclado_periodo = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Hoy",          callback_data="res_periodo_hoy"),
-         InlineKeyboardButton("📆 Esta semana",   callback_data="res_periodo_semana")],
-        [InlineKeyboardButton("🗓 Este mes",      callback_data="res_periodo_mes"),
-         InlineKeyboardButton("📋 Todo",          callback_data="res_periodo_todo")],
+async def res_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Hoy",         callback_data="res_periodo_hoy"),
+         InlineKeyboardButton("📆 Esta semana",  callback_data="res_periodo_semana")],
+        [InlineKeyboardButton("🗓 Este mes",     callback_data="res_periodo_mes"),
+         InlineKeyboardButton("📋 Todo",         callback_data="res_periodo_todo")],
         [btn_cancelar("op_menu")]
     ])
-    await query.edit_message_text("¿Qué período querés ver?", reply_markup=teclado_periodo)
-    context.user_data["res_uid"] = uid
-    return
+    await query.edit_message_text("¿Qué período querés ver?", reply_markup=teclado)
 
 async def res_elegir_periodo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
@@ -1448,58 +1441,56 @@ async def res_elegir_periodo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     periodo = query.data.replace("res_periodo_", "")
     context.user_data["res_periodo"] = periodo
 
-    # Determinar si es cliente directo o contratista/operario
     cli = get_cliente_by_telegram(uid)
     if cli:
-        # Cliente → va directo a sus campos
         context.user_data["res_cliente_id"] = cli["id"]
-        texto = armar_texto_resumen(cli["id"], periodo=periodo)
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🌾 Filtrar por campo", callback_data="res_filtrar_campo")],
-            [btn_cancelar("op_menu")]
-        ])
-        await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=teclado)
+        await _mostrar_resumen_cliente(query, cli["id"], periodo, uid, es_cliente=True)
         return
 
-    # Contratista u operario → elegir cliente
     contratista_id = get_contratista_id_de_usuario(uid)
     context.user_data["res_contratista_id"] = contratista_id
     clientes = get_clientes(contratista_id)
 
     if not clientes:
-        await query.edit_message_text("No tenés clientes registrados.", reply_markup=InlineKeyboardMarkup([[btn_cancelar("op_menu")]]))
+        await query.edit_message_text(
+            "No tenés clientes registrados.",
+            reply_markup=InlineKeyboardMarkup([[btn_cancelar("op_menu")]])
+        )
         return
 
     botones = []
     for c in clientes:
         botones.append([InlineKeyboardButton(f"👤 {c['nombre']} {c['apellido']}", callback_data=f"res_cli_{c['id']}")])
+    botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="res_inicio")])
     botones.append([btn_cancelar("op_menu")])
     await query.edit_message_text("¿Qué cliente querés ver?", reply_markup=InlineKeyboardMarkup(botones))
+
+async def _mostrar_resumen_cliente(query, cliente_id: int, periodo: str, uid: str, es_cliente: bool = False):
+    texto  = armar_texto_resumen(cliente_id, periodo=periodo)
+    campos = get_campos(cliente_id)
+    botones = []
+    for campo in campos:
+        botones.append([InlineKeyboardButton(f"🌾 {campo['nombre']}", callback_data=f"res_campo_{campo['id']}")])
+    if not es_cliente:
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="res_periodo_" + periodo)])
+    botones.append([btn_cancelar("op_menu")])
+    await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
 
 async def res_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query      = update.callback_query
     await query.answer()
+    uid        = str(update.effective_user.id)
     cliente_id = int(query.data.replace("res_cli_", ""))
     periodo    = context.user_data.get("res_periodo", "todo")
     context.user_data["res_cliente_id"] = cliente_id
-
-    r = supabase.table("clientes").select("nombre,apellido").eq("id", cliente_id).execute()
-    c = r.data[0] if r.data else {}
-
-    texto   = armar_texto_resumen(cliente_id, periodo=periodo)
-    campos  = get_campos(cliente_id)
-    botones = []
-    for campo in campos:
-        botones.append([InlineKeyboardButton(f"🌾 {campo['nombre']}", callback_data=f"res_campo_{campo['id']}")])
-    botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="res_inicio_volver")])
-    botones.append([btn_cancelar("op_menu")])
-    await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+    await _mostrar_resumen_cliente(query, cliente_id, periodo, uid)
 
 async def res_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query    = update.callback_query
+    query      = update.callback_query
     await query.answer()
-    campo_id = int(query.data.replace("res_campo_", ""))
-    periodo  = context.user_data.get("res_periodo", "todo")
+    uid        = str(update.effective_user.id)
+    campo_id   = int(query.data.replace("res_campo_", ""))
+    periodo    = context.user_data.get("res_periodo", "todo")
     cliente_id = context.user_data.get("res_cliente_id")
     context.user_data["res_campo_id"] = campo_id
 
@@ -1514,10 +1505,10 @@ async def res_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
 
 async def res_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query      = update.callback_query
     await query.answer()
-    lote_id = int(query.data.replace("res_lote_", ""))
-    periodo = context.user_data.get("res_periodo", "todo")
+    lote_id    = int(query.data.replace("res_lote_", ""))
+    periodo    = context.user_data.get("res_periodo", "todo")
     cliente_id = context.user_data.get("res_cliente_id")
     campo_id   = context.user_data.get("res_campo_id")
 
