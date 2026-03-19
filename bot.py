@@ -1587,11 +1587,12 @@ if __name__ == "__main__":
         entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
         states={
             ADD_OP_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_op_nombre)],
-            ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^op_")],
+            ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^(op_soy_yo|op_otro)$")],
             ADD_CLI_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_cli_nombre)],
-            ADD_CLI_SOY_YO: [CallbackQueryHandler(add_cli_soy_yo, pattern="^cli_")],
+            ADD_CLI_SOY_YO: [CallbackQueryHandler(add_cli_soy_yo, pattern="^(cli_soy_yo|cli_otro)$")],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
+        allow_reentry=True,
         per_message=False
     )
 
