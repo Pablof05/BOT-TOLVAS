@@ -120,6 +120,14 @@ def barra(actual, total):
     llenos = int(pct * 20)
     return "█" * llenos + "░" * (20 - llenos) + f" {pct*100:.0f}%"
 
+def tiene_descargas_operario(operario_id: int) -> bool:
+    r = supabase.table("descargas").select("id").eq("operario_id", operario_id).limit(1).execute()
+    return bool(r.data)
+
+def tiene_descargas_cliente(cliente_id: int) -> bool:
+    r = supabase.table("descargas").select("id").eq("cliente_id", cliente_id).limit(1).execute()
+    return bool(r.data)
+
 def parsear_kg(texto: str):
     t = texto.upper()
     m = re.search(r'(\d[\d\.,]*)\s*(?:KGS?|KL|KILO|TON(?:ES|S)?)?', t)
@@ -515,52 +523,100 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         op_id  = int(accion.replace("op_eliminar_", ""))
         r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else "este operario"
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"op_confirmar_eliminar_{op_id}")],
-            [InlineKeyboardButton("❌ Cancelar",      callback_data=f"op_detalle_{op_id}")],
-        ])
-        await query.edit_message_text(f"¿Confirmar eliminación de *{nombre}*?", parse_mode="Markdown", reply_markup=teclado)
+        if tiene_descargas_operario(op_id):
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Quitar acceso al bot", callback_data=f"op_quitar_acceso_{op_id}")],
+                [InlineKeyboardButton("❌ Cancelar",              callback_data=f"op_detalle_{op_id}")],
+            ])
+            await query.edit_message_text(
+                f"⚠️ *{nombre}* tiene descargas registradas y no puede eliminarse.\n\n"
+                "Podés quitarle el acceso al bot. Si en el futuro querés restaurar su acceso, "
+                "se generará un nuevo código para compartirle.",
+                parse_mode="Markdown", reply_markup=teclado
+            )
+        else:
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"op_confirmar_eliminar_{op_id}")],
+                [InlineKeyboardButton("❌ Cancelar",      callback_data=f"op_detalle_{op_id}")],
+            ])
+            await query.edit_message_text(
+                f"¿Confirmar eliminación de *{nombre}*?",
+                parse_mode="Markdown", reply_markup=teclado
+            )
         return ConversationHandler.END
 
     elif accion.startswith("op_confirmar_eliminar_"):
         op_id  = int(accion.replace("op_confirmar_eliminar_", ""))
         r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else ""
-        try:
-            supabase.table("usuarios").delete().eq("id", op_id).execute()
-            await query.edit_message_text(f"✅ Operario *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
-        except Exception as e:
-            logging.error(f"Error al eliminar operario {op_id}: {e}")
-            await query.edit_message_text(
-                f"❌ No se pudo eliminar a *{nombre}*.\nPosiblemente tiene descargas registradas asociadas.",
-                parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
-            )
+        supabase.table("usuarios").delete().eq("id", op_id).execute()
+        await query.edit_message_text(
+            f"✅ Operario *{nombre}* eliminado.",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("op_quitar_acceso_"):
+        op_id  = int(accion.replace("op_quitar_acceso_", ""))
+        r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
+        nombre = r.data[0]["nombre"] if r.data else ""
+        nuevo_codigo = generar_codigo()
+        supabase.table("usuarios").update({"telegram_id": None, "codigo_acceso": nuevo_codigo}).eq("id", op_id).execute()
+        await query.edit_message_text(
+            f"🚫 Acceso de *{nombre}* revocado.\n\n"
+            f"Si querés restaurar su acceso, compartile este código: *{nuevo_codigo}*",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
         return ConversationHandler.END
 
     elif accion.startswith("cli_eliminar_"):
         cli_id = int(accion.replace("cli_eliminar_", ""))
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else "este cliente"
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"cli_confirmar_eliminar_{cli_id}")],
-            [InlineKeyboardButton("❌ Cancelar",      callback_data=f"cli_detalle_{cli_id}")],
-        ])
-        await query.edit_message_text(f"¿Confirmar eliminación de *{nombre}*?", parse_mode="Markdown", reply_markup=teclado)
+        if tiene_descargas_cliente(cli_id):
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Quitar acceso al bot", callback_data=f"cli_quitar_acceso_{cli_id}")],
+                [InlineKeyboardButton("❌ Cancelar",              callback_data=f"cli_detalle_{cli_id}")],
+            ])
+            await query.edit_message_text(
+                f"⚠️ *{nombre}* tiene descargas registradas y no puede eliminarse.\n\n"
+                "Podés quitarle el acceso al bot. Si en el futuro querés restaurar su acceso, "
+                "se generará un nuevo código para compartirle.",
+                parse_mode="Markdown", reply_markup=teclado
+            )
+        else:
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"cli_confirmar_eliminar_{cli_id}")],
+                [InlineKeyboardButton("❌ Cancelar",      callback_data=f"cli_detalle_{cli_id}")],
+            ])
+            await query.edit_message_text(
+                f"¿Confirmar eliminación de *{nombre}*?",
+                parse_mode="Markdown", reply_markup=teclado
+            )
         return ConversationHandler.END
 
     elif accion.startswith("cli_confirmar_eliminar_"):
         cli_id = int(accion.replace("cli_confirmar_eliminar_", ""))
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
-        try:
-            supabase.table("clientes").delete().eq("id", cli_id).execute()
-            await query.edit_message_text(f"✅ Cliente *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
-        except Exception as e:
-            logging.error(f"Error al eliminar cliente {cli_id}: {e}")
-            await query.edit_message_text(
-                f"❌ No se pudo eliminar a *{nombre}*.\nPosiblemente tiene descargas registradas asociadas.",
-                parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
-            )
+        supabase.table("clientes").delete().eq("id", cli_id).execute()
+        await query.edit_message_text(
+            f"✅ Cliente *{nombre}* eliminado.",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cli_quitar_acceso_"):
+        cli_id = int(accion.replace("cli_quitar_acceso_", ""))
+        r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
+        nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
+        nuevo_codigo = generar_codigo()
+        supabase.table("clientes").update({"telegram_id": None, "codigo_acceso": nuevo_codigo}).eq("id", cli_id).execute()
+        await query.edit_message_text(
+            f"🚫 Acceso de *{nombre}* revocado.\n\n"
+            f"Si querés restaurar su acceso, compartile este código: *{nuevo_codigo}*",
+            parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
         return ConversationHandler.END
 
     elif accion.startswith("op_editar_"):
@@ -1657,7 +1713,7 @@ if __name__ == "__main__":
     )
 
     menu_cont_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|cli_ver_desc|cli_menu|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
+        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|cli_ver_desc|cli_menu|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_quitar_acceso_|cli_quitar_acceso_|op_editar_|cli_editar_)")],
         states={
             ADD_OP_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_op_nombre)],
             ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^(op_soy_yo|op_otro)$")],
