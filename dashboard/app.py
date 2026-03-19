@@ -25,7 +25,7 @@ def get_cliente_by_telegram(telegram_id: str):
     return r.data[0] if r.data else None
 
 def get_clientes(contratista_id: int):
-    r = supabase.table("clientes").select("*").eq("contratista_id", contratista_id).execute()
+    r = supabase.table("clientes").select("*").eq("contratista_id", contratista_id).order("apellido").execute()
     return r.data or []
 
 def get_campos(cliente_id: int):
@@ -34,6 +34,10 @@ def get_campos(cliente_id: int):
 
 def get_lotes(campo_id: int):
     r = supabase.table("lotes").select("*").eq("campo_id", campo_id).order("nombre").execute()
+    return r.data or []
+
+def get_operarios(contratista_id: int):
+    r = supabase.table("usuarios").select("id, nombre").eq("contratista_id", contratista_id).eq("rol", "operario").order("nombre").execute()
     return r.data or []
 
 def desde_periodo(periodo: str):
@@ -46,36 +50,48 @@ def desde_periodo(periodo: str):
         return ahora_ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     return None
 
-def get_descargas_lote(lote_id: int, desde=None):
+def get_descargas_lote(lote_id: int, desde=None, operario_id=None):
     q = supabase.table("descargas").select(
-        "kg, destino, camion_id, silobolsa_id, created_at, "
+        "kg, destino, camion_id, silobolsa_id, operario_id, created_at, "
         "camiones(patente_chasis, patente_acoplado, capacidad_kg, cerrado), "
-        "silobolsas(numero, cerrado)"
+        "silobolsas(numero, cerrado), "
+        "usuarios(nombre)"
     ).eq("lote_id", lote_id)
     if desde:
         q = q.gte("created_at", desde)
+    if operario_id:
+        q = q.eq("operario_id", operario_id)
     return q.execute().data or []
 
-def construir_resumen(cliente_id: int, periodo: str, campo_id_filtro=None, lote_id_filtro=None):
-    desde = desde_periodo(periodo)
-    campos = get_campos(cliente_id)
+def construir_resumen(cliente_id: int, periodo: str, campo_id_filtro=None,
+                      lote_id_filtro=None, operario_id=None, tipo=None):
+    desde    = desde_periodo(periodo)
+    campos   = get_campos(cliente_id)
     resultado = []
+    total_kg_global = 0.0
 
     for campo in campos:
         if campo_id_filtro and campo["id"] != campo_id_filtro:
             continue
-        lotes = get_lotes(campo["id"])
+        lotes      = get_lotes(campo["id"])
         lotes_data = []
+
         for lote in lotes:
             if lote_id_filtro and lote["id"] != lote_id_filtro:
                 continue
-            descargas = get_descargas_lote(lote["id"], desde)
+            descargas = get_descargas_lote(lote["id"], desde, operario_id)
             if not descargas:
                 continue
+
             camiones = {}
             silos    = {}
+            total_lote = 0.0
+
             for d in descargas:
+                kg = float(d["kg"])
                 if d["destino"] == "camion" and d.get("camion_id"):
+                    if tipo == "silo":
+                        continue
                     cid = d["camion_id"]
                     c   = d.get("camiones") or {}
                     if cid not in camiones:
@@ -84,27 +100,34 @@ def construir_resumen(cliente_id: int, periodo: str, campo_id_filtro=None, lote_
                             "acoplado":  c.get("patente_acoplado", "?"),
                             "capacidad": c.get("capacidad_kg"),
                             "cerrado":   c.get("cerrado", False),
-                            "kg": 0
+                            "kg": 0.0,
                         }
-                    camiones[cid]["kg"] += float(d["kg"])
+                    camiones[cid]["kg"] += kg
+                    total_lote += kg
                 elif d["destino"] == "silo" and d.get("silobolsa_id"):
+                    if tipo == "camion":
+                        continue
                     sid = d["silobolsa_id"]
                     s   = d.get("silobolsas") or {}
                     if sid not in silos:
                         silos[sid] = {
                             "numero":  s.get("numero", "?"),
                             "cerrado": s.get("cerrado", False),
-                            "kg": 0
+                            "kg": 0.0,
                         }
-                    silos[sid]["kg"] += float(d["kg"])
+                    silos[sid]["kg"] += kg
+                    total_lote += kg
 
-            total_lote = sum(float(d["kg"]) for d in descargas)
+            if not camiones and not silos:
+                continue
+
+            total_kg_global += total_lote
             lotes_data.append({
                 "nombre":   lote["nombre"],
                 "grano":    lote.get("grano", ""),
                 "total_kg": total_lote,
-                "camiones": list(camiones.values()),
-                "silos":    list(silos.values()),
+                "camiones": sorted(camiones.values(), key=lambda x: x["chasis"]),
+                "silos":    sorted(silos.values(),    key=lambda x: x["numero"]),
             })
 
         if lotes_data:
@@ -114,7 +137,8 @@ def construir_resumen(cliente_id: int, periodo: str, campo_id_filtro=None, lote_
                 "lotes":  lotes_data,
             })
 
-    return resultado
+    return resultado, total_kg_global
+
 
 # ── Rutas ────────────────────────────────────────────────────
 @app.route("/", methods=["GET", "POST"])
@@ -151,45 +175,67 @@ def login():
 
     return render_template("login.html", error=error)
 
+
 @app.route("/dashboard")
 def dashboard():
     if "telegram_id" not in session:
         return redirect(url_for("login"))
 
-    rol      = session["rol"]
-    nombre   = session["nombre"]
-    periodo  = request.args.get("periodo", "todo")
-    campo_id = int(request.args.get("campo_id", 0)) or None
-    lote_id  = int(request.args.get("lote_id", 0)) or None
+    rol         = session["rol"]
+    nombre      = session["nombre"]
+    periodo     = request.args.get("periodo", "todo")
+    campo_id    = int(request.args.get("campo_id",    0)) or None
+    lote_id     = int(request.args.get("lote_id",     0)) or None
+    operario_id = int(request.args.get("operario_id", 0)) or None
+    tipo        = request.args.get("tipo", "") or None   # "camion" | "silo" | None
+
+    operarios = []
 
     if rol in ("contratista", "operario"):
         cont_id  = session["cont_id"]
         clientes = get_clientes(cont_id)
         cli_id   = int(request.args.get("cli_id", 0)) or (clientes[0]["id"] if clientes else None)
-        cliente_actual = next((c for c in clientes if c["id"] == cli_id), clientes[0] if clientes else None)
-        resumen  = construir_resumen(cli_id, periodo, campo_id, lote_id) if cli_id else []
-        campos   = get_campos(cli_id) if cli_id else []
-        lotes    = get_lotes(campo_id) if campo_id else []
+        cliente_actual = next((c for c in clientes if c["id"] == cli_id),
+                              clientes[0] if clientes else None)
+        campos    = get_campos(cli_id) if cli_id else []
+        lotes     = get_lotes(campo_id) if campo_id else []
+        operarios = get_operarios(cont_id)
+        resumen, total_kg = (
+            construir_resumen(cli_id, periodo, campo_id, lote_id, operario_id, tipo)
+            if cli_id else ([], 0.0)
+        )
     else:
         cli_id         = session["cli_id"]
         clientes       = []
         cliente_actual = None
-        resumen        = construir_resumen(cli_id, periodo, campo_id, lote_id)
         campos         = get_campos(cli_id)
         lotes          = get_lotes(campo_id) if campo_id else []
+        resumen, total_kg = construir_resumen(
+            cli_id, periodo, campo_id, lote_id, operario_id, tipo
+        )
+
+    total_camiones = sum(len(l["camiones"]) for c in resumen for l in c["lotes"])
+    total_silos    = sum(len(l["silos"])    for c in resumen for l in c["lotes"])
 
     return render_template("dashboard.html",
         rol=rol, nombre=nombre, periodo=periodo,
         clientes=clientes, cli_id=cli_id, cliente_actual=cliente_actual,
         campos=campos, campo_id=campo_id,
         lotes=lotes, lote_id=lote_id,
+        operarios=operarios, operario_id=operario_id,
+        tipo=tipo or "",
         resumen=resumen,
+        total_kg=total_kg,
+        total_camiones=total_camiones,
+        total_silos=total_silos,
     )
+
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
