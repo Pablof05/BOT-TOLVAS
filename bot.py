@@ -1,5 +1,8 @@
 import os, re, random, logging
 from datetime import datetime, timezone, timedelta
+from io import BytesIO
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (ApplicationBuilder, MessageHandler, CommandHandler,
                           ConversationHandler, CallbackQueryHandler,
@@ -131,6 +134,64 @@ def parsear_patente(texto: str):
     m = re.search(r'\b([A-Z]{2,3}\s?\d{3}\s?[A-Z]{0,2})\b', t)
     return re.sub(r'\s+', '', m.group(1)) if m else re.sub(r'\s+', '', t)
 
+def get_descargas_lote(lote_id: int):
+    r = supabase.table("descargas").select(
+        "*, clientes(nombre,apellido), campos(nombre), lotes(nombre,grano), "
+        "camiones(patente_chasis,patente_acoplado,cerrado), silobolsas(numero,cerrado), usuarios(nombre)"
+    ).eq("lote_id", lote_id).order("created_at").execute()
+    return r.data or []
+
+def get_descargas_contratista(contratista_id: int):
+    r = supabase.table("descargas").select(
+        "*, clientes(nombre,apellido), campos(nombre), lotes(nombre,grano), "
+        "camiones(patente_chasis,patente_acoplado,cerrado), silobolsas(numero,cerrado), usuarios(nombre)"
+    ).eq("contratista_id", contratista_id).order("created_at").execute()
+    return r.data or []
+
+def generar_excel(descargas: list) -> BytesIO:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Descargas"
+
+    headers = ["Fecha", "Cliente", "Campo", "Lote", "Grano", "Tipo", "Destino", "Kg", "Operario"]
+    ws.append(headers)
+    header_fill = PatternFill("solid", fgColor="1F4E79")
+    for cell in ws[1]:
+        cell.font      = Font(bold=True, color="FFFFFF")
+        cell.fill      = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for d in descargas:
+        cliente = d.get("clientes")   or {}
+        campo   = d.get("campos")     or {}
+        lote    = d.get("lotes")      or {}
+        camion  = d.get("camiones")   or {}
+        silo    = d.get("silobolsas") or {}
+        op      = d.get("usuarios")   or {}
+
+        fecha       = (d.get("created_at") or "")[:10]
+        cliente_str = f"{cliente.get('nombre','')} {cliente.get('apellido','')}".strip()
+        tipo        = "Camión" if d.get("destino") == "camion" else "Silobolsa"
+        destino     = (
+            f"{camion.get('patente_chasis','')} / {camion.get('patente_acoplado','')}"
+            if d.get("destino") == "camion"
+            else f"Silo #{silo.get('numero','')}"
+        )
+        ws.append([
+            fecha, cliente_str, campo.get("nombre", ""), lote.get("nombre", ""),
+            lote.get("grano", ""), tipo, destino, float(d.get("kg", 0)), op.get("nombre", "")
+        ])
+
+    # Ajustar anchos de columna
+    col_widths = [12, 20, 18, 18, 10, 10, 24, 10, 15]
+    for i, width in enumerate(col_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
 # ── Teclados ─────────────────────────────────────────────────
 def teclado_menu_contratista(contratista_id: int, telegram_id: str):
     operarios = get_operarios(contratista_id)
@@ -138,6 +199,7 @@ def teclado_menu_contratista(contratista_id: int, telegram_id: str):
     botones   = [
         [InlineKeyboardButton(f"👷 Mis operarios ({len(operarios)})", callback_data="cont_ver_op")],
         [InlineKeyboardButton(f"👤 Mis clientes ({len(clientes)})",   callback_data="cont_ver_cli")],
+        [InlineKeyboardButton("📊 Mis descargas",                     callback_data="cont_ver_desc")],
     ]
     if es_operario(telegram_id):
         botones.append([InlineKeyboardButton("📦 Agregar descarga", callback_data="op_descarga")])
@@ -453,6 +515,144 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
 
     elif accion == "cont_volver":
         await query.edit_message_text("¿Qué querés hacer?", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        return ConversationHandler.END
+
+    # ── Mis descargas ─────────────────────────────────────────
+    elif accion == "cont_ver_desc":
+        clientes = get_clientes(cont["id"])
+        botones  = []
+        for c in clientes:
+            botones.append([InlineKeyboardButton(
+                f"👤 {c['nombre']} {c['apellido']}", callback_data=f"cont_desc_cli_{c['id']}"
+            )])
+        if not clientes:
+            botones.append([InlineKeyboardButton("(sin clientes)", callback_data="cont_volver")])
+        botones.append([InlineKeyboardButton("📥 Exportar todo a Excel", callback_data="cont_desc_excel_todo")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_volver")])
+        await query.edit_message_text(
+            "📊 *Mis descargas*\n¿Para qué cliente?",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cont_desc_cli_"):
+        cli_id = int(accion.replace("cont_desc_cli_", ""))
+        r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
+        cli_nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else "Cliente"
+        campos  = get_campos(cli_id)
+        botones = []
+        for c in campos:
+            botones.append([InlineKeyboardButton(f"🌿 {c['nombre']}", callback_data=f"cont_desc_campo_{c['id']}")])
+        if not campos:
+            botones.append([InlineKeyboardButton("(sin campos)", callback_data="cont_ver_desc")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_ver_desc")])
+        await query.edit_message_text(
+            f"📊 *{cli_nombre}*\n¿En qué campo?",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cont_desc_campo_"):
+        campo_id     = int(accion.replace("cont_desc_campo_", ""))
+        r            = supabase.table("campos").select("nombre,cliente_id").eq("id", campo_id).execute()
+        campo_nombre = r.data[0]["nombre"]    if r.data else "Campo"
+        cli_id_back  = r.data[0]["cliente_id"] if r.data else 0
+        lotes   = get_lotes(campo_id)
+        botones = []
+        for l in lotes:
+            grano = f" ({l['grano']})" if l.get("grano") else ""
+            botones.append([InlineKeyboardButton(f"📦 {l['nombre']}{grano}", callback_data=f"cont_desc_lote_{l['id']}")])
+        if not lotes:
+            botones.append([InlineKeyboardButton("(sin lotes)", callback_data=f"cont_desc_cli_{cli_id_back}")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data=f"cont_desc_cli_{cli_id_back}")])
+        await query.edit_message_text(
+            f"📊 *{campo_nombre}*\n¿En qué lote?",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cont_desc_lote_") and not accion.startswith("cont_desc_lote_excel_"):
+        lote_id  = int(accion.replace("cont_desc_lote_", ""))
+        r_lote   = supabase.table("lotes").select("nombre,grano,campo_id").eq("id", lote_id).execute()
+        if not r_lote.data:
+            await query.edit_message_text("No se encontró el lote.")
+            return ConversationHandler.END
+        lote          = r_lote.data[0]
+        campo_id_back = lote["campo_id"]
+        descargas     = get_descargas_lote(lote_id)
+
+        camiones_res = {}
+        silos_res    = {}
+        total_kg     = 0.0
+        for d in descargas:
+            kg = float(d.get("kg", 0))
+            total_kg += kg
+            if d.get("destino") == "camion" and d.get("camion_id"):
+                cid = d["camion_id"]
+                if cid not in camiones_res:
+                    c = d.get("camiones") or {}
+                    camiones_res[cid] = {
+                        "patente": f"{c.get('patente_chasis','')} / {c.get('patente_acoplado','')}",
+                        "kg": 0.0, "cerrado": c.get("cerrado", False)
+                    }
+                camiones_res[cid]["kg"] += kg
+            elif d.get("destino") == "silo" and d.get("silobolsa_id"):
+                sid = d["silobolsa_id"]
+                if sid not in silos_res:
+                    s = d.get("silobolsas") or {}
+                    silos_res[sid] = {"numero": s.get("numero", "?"), "kg": 0.0, "cerrado": s.get("cerrado", False)}
+                silos_res[sid]["kg"] += kg
+
+        grano_str = f" ({lote['grano']})" if lote.get("grano") else ""
+        lineas = [f"📊 *Lote: {lote['nombre']}{grano_str}*", f"Total: *{total_kg:,.0f} kg*"]
+        if camiones_res:
+            lineas.append("\n🚛 *Camiones:*")
+            for c in camiones_res.values():
+                estado = "🔒" if c["cerrado"] else "🟢"
+                lineas.append(f"  {estado} {c['patente']} — {c['kg']:,.0f} kg")
+        if silos_res:
+            lineas.append("\n🌾 *Silobolsas:*")
+            for s in silos_res.values():
+                estado = "🔒" if s["cerrado"] else "🟢"
+                lineas.append(f"  {estado} Silo #{s['numero']} — {s['kg']:,.0f} kg")
+        if not camiones_res and not silos_res:
+            lineas.append("\nSin descargas registradas.")
+
+        botones = [
+            [InlineKeyboardButton("📥 Exportar a Excel", callback_data=f"cont_desc_excel_{lote_id}")],
+            [InlineKeyboardButton("⬅️ Volver",           callback_data=f"cont_desc_campo_{campo_id_back}")],
+        ]
+        await query.edit_message_text(
+            "\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
+        return ConversationHandler.END
+
+    elif accion.startswith("cont_desc_excel_"):
+        parte = accion.replace("cont_desc_excel_", "")
+        await query.edit_message_text("⏳ Generando Excel, aguardá un momento...")
+        if parte == "todo":
+            descargas = get_descargas_contratista(cont["id"])
+            filename  = "descargas_completo.xlsx"
+            caption   = "📊 Reporte completo de descargas."
+        else:
+            lote_id   = int(parte)
+            descargas = get_descargas_lote(lote_id)
+            r_ln      = supabase.table("lotes").select("nombre").eq("id", lote_id).execute()
+            lote_nombre = r_ln.data[0]["nombre"] if r_ln.data else "lote"
+            filename  = f"descargas_{lote_nombre}.xlsx"
+            caption   = f"📊 Reporte de descargas — Lote {lote_nombre}."
+        buf = generar_excel(descargas)
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=buf,
+            filename=filename,
+            caption=caption
+        )
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="¿Qué querés hacer?",
+            reply_markup=teclado_menu_contratista(cont["id"], uid)
+        )
         return ConversationHandler.END
 
     return ConversationHandler.END
