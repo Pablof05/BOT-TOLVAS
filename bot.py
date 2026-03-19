@@ -417,7 +417,12 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         botones.append([InlineKeyboardButton("✏️ Modificar nombre",  callback_data=f"op_editar_{op_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar operario", callback_data=f"op_eliminar_{op_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",            callback_data="cont_ver_op")])
-        await query.edit_message_text(f"👷 *{op['nombre']}*\nEstado: {icono}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        texto_op = f"👷 *{op['nombre']}*\nEstado: {icono}"
+        if op.get("telegram_id"):
+            texto_op += f"\nTelegram ID: `{op['telegram_id']}`"
+        elif op.get("codigo_acceso"):
+            texto_op += f"\nCódigo de acceso: `{op['codigo_acceso']}`"
+        await query.edit_message_text(texto_op, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion.startswith("cli_detalle_"):
@@ -434,7 +439,12 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         botones.append([InlineKeyboardButton("✏️ Modificar nombre", callback_data=f"cli_editar_{cli_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar cliente", callback_data=f"cli_eliminar_{cli_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",           callback_data="cont_ver_cli")])
-        await query.edit_message_text(f"👤 *{cli['nombre']} {cli['apellido']}*\nEstado: {icono}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        texto_cli = f"👤 *{cli['nombre']} {cli['apellido']}*\nEstado: {icono}"
+        if cli.get("telegram_id"):
+            texto_cli += f"\nTelegram ID: `{cli['telegram_id']}`"
+        elif cli.get("codigo_acceso"):
+            texto_cli += f"\nCódigo de acceso: `{cli['codigo_acceso']}`"
+        await query.edit_message_text(texto_cli, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion.startswith("op_vercodigo_"):
@@ -1577,11 +1587,12 @@ if __name__ == "__main__":
         entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
         states={
             ADD_OP_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_op_nombre)],
-            ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^op_")],
+            ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^(op_soy_yo|op_otro)$")],
             ADD_CLI_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_cli_nombre)],
-            ADD_CLI_SOY_YO: [CallbackQueryHandler(add_cli_soy_yo, pattern="^cli_")],
+            ADD_CLI_SOY_YO: [CallbackQueryHandler(add_cli_soy_yo, pattern="^(cli_soy_yo|cli_otro)$")],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
+        allow_reentry=True,
         per_message=False
     )
 
