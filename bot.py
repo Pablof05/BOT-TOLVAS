@@ -199,6 +199,8 @@ def teclado_menu_contratista(contratista_id: int, telegram_id: str):
     botones   = [
         [InlineKeyboardButton(f"👷 Mis operarios ({len(operarios)})", callback_data="cont_ver_op")],
         [InlineKeyboardButton(f"👤 Mis clientes ({len(clientes)})",   callback_data="cont_ver_cli")],
+        [InlineKeyboardButton("🚛 Mis camiones",  callback_data="op_camiones"),
+         InlineKeyboardButton("🌾 Mis silobolsas", callback_data="op_silos")],
         [InlineKeyboardButton("📊 Mis descargas",                     callback_data="cont_ver_desc")],
     ]
     if es_operario(telegram_id):
@@ -210,6 +212,7 @@ def teclado_menu_operario():
         [InlineKeyboardButton("📦 Agregar descarga", callback_data="op_descarga")],
         [InlineKeyboardButton("🚛 Mis camiones",     callback_data="op_camiones")],
         [InlineKeyboardButton("🌾 Mis silobolsas",   callback_data="op_silos")],
+        [InlineKeyboardButton("📊 Mis descargas",    callback_data="cont_ver_desc")],
     ])
 
 def teclado_roles():
@@ -373,8 +376,16 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
     cont   = get_contratista(uid)
     accion = query.data
 
-    if not cont:
+    # Las acciones de "Mis descargas" son accesibles también para operarios
+    es_accion_desc = (accion == "cont_ver_desc" or accion.startswith("cont_desc_"))
+    contratista_id = cont["id"] if cont else (get_contratista_id_de_usuario(uid) if es_accion_desc else None)
+
+    if not cont and not es_accion_desc:
         await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+        return ConversationHandler.END
+
+    if es_accion_desc and not contratista_id:
+        await query.edit_message_text("No se encontró tu contratista. Escribí /start.")
         return ConversationHandler.END
 
     if accion == "cont_ver_op":
@@ -529,16 +540,17 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
 
     # ── Mis descargas ─────────────────────────────────────────
     elif accion == "cont_ver_desc":
-        clientes = get_clientes(cont["id"])
-        botones  = []
+        clientes   = get_clientes(contratista_id)
+        volver_cb  = "cont_volver" if cont else "op_menu"
+        botones    = []
         for c in clientes:
             botones.append([InlineKeyboardButton(
                 f"👤 {c['nombre']} {c['apellido']}", callback_data=f"cont_desc_cli_{c['id']}"
             )])
         if not clientes:
-            botones.append([InlineKeyboardButton("(sin clientes)", callback_data="cont_volver")])
+            botones.append([InlineKeyboardButton("(sin clientes)", callback_data=volver_cb)])
         botones.append([InlineKeyboardButton("📥 Exportar todo a Excel", callback_data="cont_desc_excel_todo")])
-        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_volver")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data=volver_cb)])
         await query.edit_message_text(
             "📊 *Mis descargas*\n¿Para qué cliente?",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
@@ -641,7 +653,7 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         parte = accion.replace("cont_desc_excel_", "")
         await query.edit_message_text("⏳ Generando Excel, aguardá un momento...")
         if parte == "todo":
-            descargas = get_descargas_contratista(cont["id"])
+            descargas = get_descargas_contratista(contratista_id)
             filename  = "descargas_completo.xlsx"
             caption   = "📊 Reporte completo de descargas."
         else:
@@ -658,10 +670,12 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
             filename=filename,
             caption=caption
         )
+        menu_markup = (teclado_menu_contratista(contratista_id, uid) if cont
+                       else teclado_menu_operario())
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text="¿Qué querés hacer?",
-            reply_markup=teclado_menu_contratista(cont["id"], uid)
+            reply_markup=menu_markup
         )
         return ConversationHandler.END
 
