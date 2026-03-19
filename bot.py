@@ -1,4 +1,4 @@
-import os, re, random, logging
+import os, re, random, string, logging
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 import openpyxl
@@ -28,12 +28,30 @@ ARG = timezone(timedelta(hours=-3))
     DESC_CAMION_CHASIS, DESC_CAMION_ACOPLADO, DESC_CAMION_CAPACIDAD,
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
-) = range(21)
+    REG_CLI_PASS,
+) = range(22)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
 def generar_codigo():
     return str(random.randint(1000, 9999))
+
+def generar_password(n=10):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=n))
+
+def crear_auth_usuario(email: str, password: str):
+    """Crea usuario en Supabase Auth via admin API. Retorna user_id o None."""
+    try:
+        res = supabase.auth.admin.create_user({
+            "email": email,
+            "password": password,
+            "email_confirm": True,
+        })
+        return res.user.id if res.user else None
+    except Exception as e:
+        logging.error(f"Error creando auth user: {e}")
+        return None
 
 def ahora():
     return datetime.now(ARG)
@@ -291,8 +309,24 @@ async def recibir_nombre_contratista(update: Update, context: ContextTypes.DEFAU
         "nombre": nombre, "apellido": apellido, "telegram_id": uid,
     }).execute()
     cont = get_contratista(uid)
+
+    # Crear usuario en Supabase Auth
+    email    = f"cont.{uid}@tolvas.app"
+    password = generar_password()
+    user_id  = crear_auth_usuario(email, password)
+    if user_id:
+        supabase.table("contratistas").update({"user_id": user_id}).eq("telegram_id", uid).execute()
+        creds_msg = (
+            f"\n\n📋 *Tus credenciales para el panel web:*\n"
+            f"Usuario: `{email}`\n"
+            f"Contraseña: `{password}`\n\n"
+            f"_Guardá estos datos, los vas a necesitar para entrar al panel._"
+        )
+    else:
+        creds_msg = ""
+
     await update.message.reply_text(
-        f"✅ Bienvenido *{nombre} {apellido}*! Quedaste registrado como contratista.",
+        f"✅ Bienvenido *{nombre} {apellido}*! Quedaste registrado como contratista.{creds_msg}",
         parse_mode="Markdown",
         reply_markup=teclado_menu_contratista(cont["id"], uid)
     )
@@ -346,14 +380,37 @@ async def confirmar_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "nombre_corregir":
         await query.edit_message_text("¿Cuál es tu nombre y apellido correcto?")
         return CORREGIR_NOMBRE
+    if context.user_data.get("codigo_encontrado_tipo") == "cliente":
+        await query.edit_message_text(
+            "✅ Nombre confirmado.\n\nElegí una contraseña para ingresar al panel web "
+            "(mínimo 8 caracteres):"
+        )
+        return REG_CLI_PASS
     await _vincular_usuario(str(update.effective_user.id), context, None, query)
     return ConversationHandler.END
 
 async def corregir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _vincular_usuario(str(update.effective_user.id), context, update.message.text.strip(), None, update.message)
+    nombre_nuevo = update.message.text.strip()
+    if context.user_data.get("codigo_encontrado_tipo") == "cliente":
+        context.user_data["nombre_nuevo"] = nombre_nuevo
+        await update.message.reply_text(
+            "✅ Nombre actualizado.\n\nElegí una contraseña para ingresar al panel web "
+            "(mínimo 8 caracteres):"
+        )
+        return REG_CLI_PASS
+    await _vincular_usuario(str(update.effective_user.id), context, nombre_nuevo, None, update.message)
     return ConversationHandler.END
 
-async def _vincular_usuario(uid, context, nombre_nuevo, query=None, msg=None):
+async def recibir_pass_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text.strip()
+    if len(password) < 8:
+        await update.message.reply_text("La contraseña debe tener al menos 8 caracteres. Intentá de nuevo:")
+        return REG_CLI_PASS
+    nombre_nuevo = context.user_data.pop("nombre_nuevo", None)
+    await _vincular_usuario(str(update.effective_user.id), context, nombre_nuevo, None, update.message, password=password)
+    return ConversationHandler.END
+
+async def _vincular_usuario(uid, context, nombre_nuevo, query=None, msg=None, password=None):
     tipo   = context.user_data["codigo_encontrado_tipo"]
     rec_id = context.user_data["codigo_encontrado_id"]
     if tipo == "operario":
@@ -374,7 +431,24 @@ async def _vincular_usuario(uid, context, nombre_nuevo, query=None, msg=None):
         r = supabase.table("clientes").select("nombre,apellido").eq("id", rec_id).execute()
         c = r.data[0] if r.data else {}
         nombre_final = f"{c.get('nombre','')} {c.get('apellido','')}".strip()
-        texto   = f"✅ Bienvenido *{nombre_final}*! Ya tenés acceso como cliente."
+
+        # Crear usuario en Supabase Auth si se proporcionó contraseña
+        creds_msg = ""
+        if password:
+            email   = f"cli.{uid}@tolvas.app"
+            user_id = crear_auth_usuario(email, password)
+            if user_id:
+                supabase.table("clientes").update({"user_id": user_id}).eq("id", rec_id).execute()
+                creds_msg = (
+                    f"\n\n📋 *Tus credenciales para el panel web:*\n"
+                    f"Usuario: `{email}`\n"
+                    f"Contraseña: la que elegiste\n\n"
+                    f"_Guardá el usuario, lo vas a necesitar para entrar al panel._"
+                )
+            else:
+                creds_msg = "\n\n⚠️ No se pudo crear la cuenta del panel web. Contactá a tu contratista."
+
+        texto   = f"✅ Bienvenido *{nombre_final}*! Ya tenés acceso como cliente.{creds_msg}"
         teclado = None
     if query:
         await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=teclado)
@@ -1707,6 +1781,7 @@ if __name__ == "__main__":
             INGRESAR_CODIGO:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ingresar_codigo)],
             CONFIRMAR_NOMBRE: [CallbackQueryHandler(confirmar_nombre, pattern="^nombre_")],
             CORREGIR_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, corregir_nombre)],
+            REG_CLI_PASS:     [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_pass_cliente)],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
         per_message=False
