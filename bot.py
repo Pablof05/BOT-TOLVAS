@@ -215,6 +215,11 @@ def teclado_menu_operario():
         [InlineKeyboardButton("📊 Mis descargas",    callback_data="cont_ver_desc")],
     ])
 
+def teclado_menu_cliente():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Mis descargas", callback_data="cli_ver_desc")],
+    ])
+
 def teclado_roles():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏭 Contratista / Dueño del equipo", callback_data="rol_contratista")],
@@ -246,9 +251,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cli:
         cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
         await update.message.reply_text(
-            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n"
-            "Próximamente podrás consultar tus datos desde acá.",
-            parse_mode="Markdown"
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown",
+            reply_markup=teclado_menu_cliente()
         )
         return ConversationHandler.END
     await update.message.reply_text(
@@ -376,16 +381,50 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
     cont   = get_contratista(uid)
     accion = query.data
 
-    # Las acciones de "Mis descargas" son accesibles también para operarios
+    # Acciones exclusivas para clientes (no requieren cont)
+    es_accion_cli = accion in ("cli_ver_desc", "cli_menu")
+    # Acciones de "Mis descargas" para operarios/contratistas
     es_accion_desc = (accion == "cont_ver_desc" or accion.startswith("cont_desc_"))
+
     contratista_id = cont["id"] if cont else (get_contratista_id_de_usuario(uid) if es_accion_desc else None)
 
-    if not cont and not es_accion_desc:
+    if not cont and not es_accion_desc and not es_accion_cli:
         await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
         return ConversationHandler.END
 
-    if es_accion_desc and not contratista_id:
+    if es_accion_desc and not cont and not contratista_id:
         await query.edit_message_text("No se encontró tu contratista. Escribí /start.")
+        return ConversationHandler.END
+
+    # ── Menú cliente ──────────────────────────────────────────
+    if accion == "cli_menu":
+        cli = get_cliente_by_telegram(uid)
+        if not cli:
+            await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+            return ConversationHandler.END
+        cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
+        await query.edit_message_text(
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown", reply_markup=teclado_menu_cliente()
+        )
+        return ConversationHandler.END
+
+    if accion == "cli_ver_desc":
+        cli = get_cliente_by_telegram(uid)
+        if not cli:
+            await query.edit_message_text("No se encontró tu cuenta. Escribí /start.")
+            return ConversationHandler.END
+        campos  = get_campos(cli["id"])
+        botones = []
+        for c in campos:
+            botones.append([InlineKeyboardButton(f"🌿 {c['nombre']}", callback_data=f"cont_desc_campo_{c['id']}")])
+        if not campos:
+            botones.append([InlineKeyboardButton("(sin campos)", callback_data="cli_menu")])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cli_menu")])
+        await query.edit_message_text(
+            "📊 *Mis descargas*\n¿En qué campo?",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
+        )
         return ConversationHandler.END
 
     if accion == "cont_ver_op":
@@ -558,16 +597,19 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
 
     elif accion.startswith("cont_desc_cli_"):
-        cli_id = int(accion.replace("cont_desc_cli_", ""))
-        r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
+        cli_id     = int(accion.replace("cont_desc_cli_", ""))
+        r          = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         cli_nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else "Cliente"
+        # Si el usuario logueado es el mismo cliente, volver a su menú propio
+        cli_propio = get_cliente_by_telegram(uid)
+        volver_cb  = "cli_ver_desc" if (cli_propio and cli_propio["id"] == cli_id) else "cont_ver_desc"
         campos  = get_campos(cli_id)
         botones = []
         for c in campos:
             botones.append([InlineKeyboardButton(f"🌿 {c['nombre']}", callback_data=f"cont_desc_campo_{c['id']}")])
         if not campos:
-            botones.append([InlineKeyboardButton("(sin campos)", callback_data="cont_ver_desc")])
-        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data="cont_ver_desc")])
+            botones.append([InlineKeyboardButton("(sin campos)", callback_data=volver_cb)])
+        botones.append([InlineKeyboardButton("⬅️ Volver", callback_data=volver_cb)])
         await query.edit_message_text(
             f"📊 *{cli_nombre}*\n¿En qué campo?",
             parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones)
@@ -1571,7 +1613,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cli = get_cliente_by_telegram(uid)
     if cli:
         cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
-        await update.message.reply_text(f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\nPróximamente podrás consultar tus datos desde acá.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown", reply_markup=teclado_menu_cliente()
+        )
         return
     await update.message.reply_text(
         "No tenés permisos para acceder.\n\nSi sos contratista escribí /start.\nSi sos operario o cliente, ingresá el código que te dio tu contratista:"
@@ -1598,7 +1643,7 @@ if __name__ == "__main__":
     )
 
     menu_cont_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
+        entry_points=[CallbackQueryHandler(menu_contratista_callback, pattern="^(cont_|cli_ver_desc|cli_menu|op_detalle_|cli_detalle_|op_vercodigo_|cli_vercodigo_|op_eliminar_|cli_eliminar_|op_confirmar_eliminar_|cli_confirmar_eliminar_|op_editar_|cli_editar_)")],
         states={
             ADD_OP_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, add_op_nombre)],
             ADD_OP_SOY_YO:  [CallbackQueryHandler(add_op_soy_yo,  pattern="^(op_soy_yo|op_otro)$")],
