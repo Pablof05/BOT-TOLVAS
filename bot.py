@@ -1425,15 +1425,40 @@ def teclado_volver_menu(uid: str):
 async def res_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Hoy",         callback_data="res_periodo_hoy"),
-         InlineKeyboardButton("📆 Esta semana",  callback_data="res_periodo_semana")],
-        [InlineKeyboardButton("🗓 Este mes",     callback_data="res_periodo_mes"),
-         InlineKeyboardButton("📋 Todo",         callback_data="res_periodo_todo")],
-        [btn_cancelar("op_menu")]
-    ])
-    await query.edit_message_text("¿Qué período querés ver?", reply_markup=teclado)
+    uid   = str(update.effective_user.id)
 
+    # Cliente → va directo al período
+    cli = get_cliente_by_telegram(uid)
+    if cli:
+        context.user_data["res_cliente_id"] = cli["id"]
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 Hoy",        callback_data="res_periodo_hoy"),
+             InlineKeyboardButton("📆 Esta semana", callback_data="res_periodo_semana")],
+            [InlineKeyboardButton("🗓 Este mes",    callback_data="res_periodo_mes"),
+             InlineKeyboardButton("📋 Todo",        callback_data="res_periodo_todo")],
+            [btn_cancelar("op_menu")]
+        ])
+        await query.edit_message_text("¿Qué período querés ver?", reply_markup=teclado)
+        return
+
+    # Contratista u operario → mostrar clientes primero
+    contratista_id = get_contratista_id_de_usuario(uid)
+    context.user_data["res_contratista_id"] = contratista_id
+    clientes = get_clientes(contratista_id)
+
+    if not clientes:
+        await query.edit_message_text(
+            "No tenés clientes registrados.",
+            reply_markup=InlineKeyboardMarkup([[btn_cancelar("op_menu")]])
+        )
+        return
+
+    botones = []
+    for c in clientes:
+        botones.append([InlineKeyboardButton(f"👤 {c['nombre']} {c['apellido']}", callback_data=f"res_cli_{c['id']}")])
+    botones.append([btn_cancelar("op_menu")])
+    await query.edit_message_text("¿De qué cliente querés ver el resumen?", reply_markup=InlineKeyboardMarkup(botones))
+  
 async def res_elegir_periodo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     await query.answer()
@@ -1479,11 +1504,19 @@ async def _mostrar_resumen_cliente(query, cliente_id: int, periodo: str, uid: st
 async def res_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query      = update.callback_query
     await query.answer()
-    uid        = str(update.effective_user.id)
     cliente_id = int(query.data.replace("res_cli_", ""))
-    periodo    = context.user_data.get("res_periodo", "todo")
     context.user_data["res_cliente_id"] = cliente_id
-    await _mostrar_resumen_cliente(query, cliente_id, periodo, uid)
+
+    # Ahora pedir el período
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Hoy",        callback_data="res_periodo_hoy"),
+         InlineKeyboardButton("📆 Esta semana", callback_data="res_periodo_semana")],
+        [InlineKeyboardButton("🗓 Este mes",    callback_data="res_periodo_mes"),
+         InlineKeyboardButton("📋 Todo",        callback_data="res_periodo_todo")],
+        [InlineKeyboardButton("⬅️ Volver",      callback_data="res_inicio")],
+        [btn_cancelar("op_menu")]
+    ])
+    await query.edit_message_text("¿Qué período querés ver?", reply_markup=teclado)
 
 async def res_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query      = update.callback_query
