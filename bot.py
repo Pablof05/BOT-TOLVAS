@@ -526,8 +526,15 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         op_id  = int(accion.replace("op_confirmar_eliminar_", ""))
         r      = supabase.table("usuarios").select("nombre").eq("id", op_id).execute()
         nombre = r.data[0]["nombre"] if r.data else ""
-        supabase.table("usuarios").delete().eq("id", op_id).execute()
-        await query.edit_message_text(f"✅ Operario *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        try:
+            supabase.table("usuarios").delete().eq("id", op_id).execute()
+            await query.edit_message_text(f"✅ Operario *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        except Exception as e:
+            logging.error(f"Error al eliminar operario {op_id}: {e}")
+            await query.edit_message_text(
+                f"❌ No se pudo eliminar a *{nombre}*.\nPosiblemente tiene descargas registradas asociadas.",
+                parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+            )
         return ConversationHandler.END
 
     elif accion.startswith("cli_eliminar_"):
@@ -545,8 +552,15 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         cli_id = int(accion.replace("cli_confirmar_eliminar_", ""))
         r      = supabase.table("clientes").select("nombre,apellido").eq("id", cli_id).execute()
         nombre = f"{r.data[0]['nombre']} {r.data[0]['apellido']}" if r.data else ""
-        supabase.table("clientes").delete().eq("id", cli_id).execute()
-        await query.edit_message_text(f"✅ Cliente *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        try:
+            supabase.table("clientes").delete().eq("id", cli_id).execute()
+            await query.edit_message_text(f"✅ Cliente *{nombre}* eliminado.", parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        except Exception as e:
+            logging.error(f"Error al eliminar cliente {cli_id}: {e}")
+            await query.edit_message_text(
+                f"❌ No se pudo eliminar a *{nombre}*.\nPosiblemente tiene descargas registradas asociadas.",
+                parse_mode="Markdown", reply_markup=teclado_menu_contratista(cont["id"], uid)
+            )
         return ConversationHandler.END
 
     elif accion.startswith("op_editar_"):
