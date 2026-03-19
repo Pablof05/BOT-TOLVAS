@@ -1256,10 +1256,12 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         return await mostrar_tipo_destino(query, context)
 
     if accion == "desc_cambiar":
-        sesion = get_sesion(str(query.message.chat_id))
+        sesion         = get_sesion(str(query.message.chat_id))
+        contratista_id = get_contratista_id_de_usuario(uid)
+        context.user_data["contratista_id"]       = contratista_id
         context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
         context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
-        return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
+        return await mostrar_clientes(query, context, contratista_id, sesion)
 
     return ConversationHandler.END
 
