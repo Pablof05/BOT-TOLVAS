@@ -1569,8 +1569,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\nPróximamente podrás consultar tus datos desde acá.", parse_mode="Markdown")
         return
     await update.message.reply_text(
-        "No tenés permisos para acceder.\n\nSi sos contratista escribí /start.\nSi sos operario o cliente, ingresá el código que te dio tu contratista:"
+        "No tenés permisos para acceder.\n\n"
+        "Si sos contratista escribí /start.\n"
+        "Si sos operario o cliente, ingresá el código que te dio tu contratista:"
     )
+    return INGRESAR_CODIGO
 
 # ── Main ─────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -1659,42 +1662,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(res_elegir_cliente, pattern="^res_cli_"))
     app.add_handler(CallbackQueryHandler(res_elegir_campo,   pattern="^res_campo_"))
     app.add_handler(CallbackQueryHandler(res_elegir_lote,    pattern="^res_lote_"))
-    async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_user.id)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    cont = get_contratista(uid)
-    if cont:
-        await update.message.reply_text(
-            f"Hola {cont['nombre']}! ¿Qué querés hacer?",
-            reply_markup=teclado_menu_contratista(cont["id"], uid)
-        )
-        return ConversationHandler.END
-
-    usr = get_usuario(uid)
-    if usr:
-        await update.message.reply_text(
-            f"Hola {usr['nombre']}! ¿Qué querés hacer?",
-            reply_markup=teclado_menu_operario()
-        )
-        return ConversationHandler.END
-
-    cli = get_cliente_by_telegram(uid)
-    if cli:
-        cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
-        await update.message.reply_text(
-            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n"
-            "Próximamente podrás consultar tus datos desde acá.",
-            parse_mode="Markdown"
-        )
-        return ConversationHandler.END
-
-    # No registrado → pedir código directamente
-    await update.message.reply_text(
-        "No tenés permisos para acceder.\n\n"
-        "Si sos contratista escribí /start.\n"
-        "Si sos operario o cliente, ingresá el código que te dio tu contratista:"
-    )
-    return INGRESAR_CODIGO
-  
     print("Bot corriendo...")
     app.run_polling()
