@@ -59,7 +59,7 @@ def get_clientes(contratista_id: int):
 def es_operario(telegram_id: str):
     r = supabase.table("usuarios").select("id").eq("telegram_id", telegram_id).eq("rol", "operario").execute()
     return bool(r.data)
-
+  
 def get_contratista_id_de_usuario(telegram_id: str):
     cont = get_contratista(telegram_id)
     if cont: return cont["id"]
@@ -910,29 +910,63 @@ async def desc_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYP
         return DESC_CAMION_CAPACIDAD
 
 async def desc_camion_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text.strip().replace('.','').replace(',','.')
     try:
-        cap = float(update.message.text.strip().replace('.','').replace(',','.'))
+        cap = float(texto)
     except ValueError:
         cap = 0
-    chasis   = context.user_data["desc_chasis_tmp"]
-    acoplado = context.user_data["desc_acoplado_tmp"]
+
+    # Si es 0 o no ingresó nada → default 30000
+    if cap == 0:
+        cap = 30000
+        context.user_data["desc_cap_tmp"] = cap
+        await _guardar_camion_y_continuar(update, context, cap)
+        await update.message.reply_text(
+            f"No ingresaste capacidad, se asignaron *30.000 kg* por defecto.\n\n¿Cuántos kg descargaste?",
+            parse_mode="Markdown"
+        )
+        return DESC_KG
+
+    # Rango normal entre 25000 y 40000
+    if 25000 <= cap <= 40000:
+        await _guardar_camion_y_continuar(update, context, cap)
+        return DESC_KG
+
+    # Fuera de rango → preguntar si es correcto
+    context.user_data["desc_cap_tmp"] = cap
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sí, es correcto", callback_data="cap_ok")],
+        [InlineKeyboardButton("✏️ Corregir",        callback_data="cap_corregir")],
+        [btn_cancelar()]
+    ])
+    await update.message.reply_text(
+        f"Ingresaste *{cap:,.0f} kg* — eso parece inusual para un camión.\n¿Es correcto?",
+        parse_mode="Markdown",
+        reply_markup=teclado
+    )
+    return DESC_CAMION_CAPACIDAD
+
+async def _guardar_camion_y_continuar(update, context, cap):
+    chasis         = context.user_data["desc_chasis_tmp"]
+    acoplado       = context.user_data["desc_acoplado_tmp"]
     contratista_id = context.user_data["contratista_id"]
     r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
     if r.data:
         camion_id = r.data[0]["id"]
-        if cap > 0: supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
+        supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
     else:
         nuevo     = supabase.table("camiones").insert({
             "patente_chasis": chasis, "patente_acoplado": acoplado,
-            "capacidad_kg": cap if cap > 0 else None,
-            "contratista_id": contratista_id
+            "capacidad_kg":   cap, "contratista_id": contratista_id
         }).execute()
         camion_id = nuevo.data[0]["id"]
     context.user_data["desc_destino_id"]  = camion_id
     context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
-    context.user_data["desc_capacidad"]   = cap if cap > 0 else None
-    await update.message.reply_text(f"🚛 Camión *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg?", parse_mode="Markdown")
-    return DESC_KG
+    context.user_data["desc_capacidad"]   = cap
+    await update.message.reply_text(
+        f"🚛 Camión *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg?",
+        parse_mode="Markdown"
+    )
 
 async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg = parsear_kg(update.message.text)
