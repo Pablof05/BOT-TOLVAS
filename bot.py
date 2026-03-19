@@ -417,7 +417,11 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         botones.append([InlineKeyboardButton("✏️ Modificar nombre",  callback_data=f"op_editar_{op_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar operario", callback_data=f"op_eliminar_{op_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",            callback_data="cont_ver_op")])
-        await query.edit_message_text(f"👷 *{op['nombre']}*\nEstado: {icono}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        tid_op  = op.get("telegram_id")
+        texto_op = f"👷 *{op['nombre']}*\nEstado: {icono}"
+        if tid_op:
+            texto_op += f"\nTelegram ID: `{tid_op}`"
+        await query.edit_message_text(texto_op, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion.startswith("cli_detalle_"):
@@ -434,7 +438,11 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         botones.append([InlineKeyboardButton("✏️ Modificar nombre", callback_data=f"cli_editar_{cli_id}")])
         botones.append([InlineKeyboardButton("🗑️ Eliminar cliente", callback_data=f"cli_eliminar_{cli_id}")])
         botones.append([InlineKeyboardButton("⬅️ Volver",           callback_data="cont_ver_cli")])
-        await query.edit_message_text(f"👤 *{cli['nombre']} {cli['apellido']}*\nEstado: {icono}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        tid_cli  = cli.get("telegram_id")
+        texto_cli = f"👤 *{cli['nombre']} {cli['apellido']}*\nEstado: {icono}"
+        if tid_cli:
+            texto_cli += f"\nTelegram ID: `{tid_cli}`"
+        await query.edit_message_text(texto_cli, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion.startswith("op_vercodigo_"):
