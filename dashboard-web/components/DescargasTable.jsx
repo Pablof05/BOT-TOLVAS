@@ -8,7 +8,7 @@ function fmt(fecha) {
 }
 
 export default function DescargasTable({
-  descargas, clientes, campos, clienteId, campoId, isCliente
+  descargas, clientes, campos, lotes, clienteId, campoId, loteId, isCliente
 }) {
   const router = useRouter()
   const params = useSearchParams()
@@ -17,14 +17,18 @@ export default function DescargasTable({
     const p = new URLSearchParams(params.toString())
     if (value) p.set(key, value)
     else p.delete(key)
-    if (key === 'cliente') p.delete('campo')
+    if (key === 'cliente') { p.delete('campo'); p.delete('lote') }
+    if (key === 'campo')   { p.delete('lote') }
     router.push('/dashboard/descargas?' + p.toString())
   }
 
   const totalKg = descargas.reduce((acc, d) => acc + (d.kg || 0), 0)
+
   const camposFiltrados = isCliente
     ? campos
     : campos.filter(c => !clienteId || c.cliente_id == clienteId)
+
+  const lotesFiltrados = lotes.filter(l => !campoId || l.campo_id == campoId)
 
   return (
     <div>
@@ -38,9 +42,7 @@ export default function DescargasTable({
           >
             <option value="">Todos los clientes</option>
             {clientes.map(c => (
-              <option key={c.id} value={c.id}>
-                {c.nombre} {c.apellido}
-              </option>
+              <option key={c.id} value={c.id}>{c.nombre} {c.apellido}</option>
             ))}
           </select>
         )}
@@ -56,7 +58,20 @@ export default function DescargasTable({
           ))}
         </select>
 
-        {(clienteId || campoId) && (
+        <select
+          value={loteId}
+          onChange={e => setFilter('lote', e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+        >
+          <option value="">Todos los lotes</option>
+          {lotesFiltrados.map(l => (
+            <option key={l.id} value={l.id}>
+              {l.nombre}{l.grano ? ` (${l.grano})` : ''}
+            </option>
+          ))}
+        </select>
+
+        {(clienteId || campoId || loteId) && (
           <button
             onClick={() => router.push('/dashboard/descargas')}
             className="text-sm text-red-500 hover:underline"

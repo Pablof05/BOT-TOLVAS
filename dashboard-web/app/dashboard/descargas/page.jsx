@@ -3,8 +3,9 @@ import DescargasTable from '../../../components/DescargasTable'
 
 export default async function DescargasPage({ searchParams }) {
   const supabase = createAdminClient()
-  const campoId = searchParams?.campo || ''
+  const campoId   = searchParams?.campo   || ''
   const clienteId = searchParams?.cliente || ''
+  const loteId    = searchParams?.lote    || ''
 
   const { data: clientes, error: errCl } = await supabase
     .from('clientes')
@@ -26,6 +27,11 @@ export default async function DescargasPage({ searchParams }) {
     .select('id, nombre, cliente_id')
     .order('nombre')
 
+  const { data: lotes } = await supabase
+    .from('lotes')
+    .select('id, nombre, grano, campo_id')
+    .order('nombre')
+
   let query = supabase
     .from('descargas')
     .select(`
@@ -40,6 +46,7 @@ export default async function DescargasPage({ searchParams }) {
     .limit(300)
 
   if (clienteId) query = query.eq('cliente_id', clienteId)
+  if (loteId)    query = query.eq('lote_id', loteId)
 
   const { data: descargas } = await query
 
@@ -54,8 +61,10 @@ export default async function DescargasPage({ searchParams }) {
         descargas={descargasFiltradas}
         clientes={clientes ?? []}
         campos={campos ?? []}
+        lotes={lotes ?? []}
         clienteId={clienteId}
         campoId={campoId}
+        loteId={loteId}
         isCliente={false}
       />
     </div>
