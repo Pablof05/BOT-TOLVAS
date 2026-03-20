@@ -27,6 +27,8 @@ export default async function SilobolsasPage({ searchParams }) {
   const campoId     = searchParams?.campo   || ''
   const loteId      = searchParams?.lote    || ''
   const grano       = searchParams?.grano   || ''
+  const desde       = searchParams?.desde   || ''
+  const hasta       = searchParams?.hasta   || ''
 
   let query = supabase
     .from('silobolsas')
@@ -36,30 +38,47 @@ export default async function SilobolsasPage({ searchParams }) {
   if (soloActivas) query = query.eq('cerrado', false)
   const { data: silobolsas } = await query
 
+  // Kg acumulado por silo (filtrado por fecha si corresponde)
   const siloIds = silobolsas?.map(s => s.id) ?? []
-  const { data: descargas } = siloIds.length
-    ? await supabase.from('descargas').select('silobolsa_id, kg').in('silobolsa_id', siloIds)
-    : { data: [] }
+  let descQuery = siloIds.length
+    ? supabase.from('descargas').select('silobolsa_id, kg, created_at').in('silobolsa_id', siloIds)
+    : null
+  if (descQuery && desde) descQuery = descQuery.gte('created_at', desde)
+  if (descQuery && hasta) descQuery = descQuery.lte('created_at', hasta + 'T23:59:59')
+  const { data: descargas } = descQuery ? await descQuery : { data: [] }
+
   const kgPorSilo = {}
   descargas?.forEach(d => {
     kgPorSilo[d.silobolsa_id] = (kgPorSilo[d.silobolsa_id] || 0) + (d.kg || 0)
   })
+
+  // Derivar opciones de filtro de los datos reales (solo silos con datos)
+  const clientesMap = new Map()
+  const camposMap   = new Map()
+  const lotesMap    = new Map()
+  for (const s of silobolsas ?? []) {
+    const lote    = s.lotes
+    const campo   = lote?.campos
+    const cliente = campo?.clientes
+    if (cliente) clientesMap.set(cliente.id, cliente)
+    if (campo)   camposMap.set(campo.id, { id: campo.id, nombre: campo.nombre, cliente_id: campo.cliente_id })
+    if (lote)    lotesMap.set(lote.id, { id: lote.id, nombre: lote.nombre, grano: lote.grano, campo_id: campo?.id })
+  }
+  const clientesList = [...clientesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const camposList   = [...camposMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const lotesList    = [...lotesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
 
   // Filtrar
   const silosFiltrados = (silobolsas ?? []).filter(s => {
     const lote    = s.lotes
     const campo   = lote?.campos
     const cliente = campo?.clientes
-    if (clienteId && cliente?.id != clienteId)                              return false
-    if (campoId   && campo?.id   != campoId)                                return false
-    if (loteId    && lote?.id    != loteId)                                 return false
-    if (grano     && lote?.grano?.toLowerCase() != grano.toLowerCase())     return false
+    if (clienteId && cliente?.id != clienteId)                          return false
+    if (campoId   && campo?.id   != campoId)                            return false
+    if (loteId    && lote?.id    != loteId)                             return false
+    if (grano     && lote?.grano?.toLowerCase() != grano.toLowerCase()) return false
     return true
   })
-
-  const { data: clientes } = await supabase.from('clientes').select('id, nombre, apellido').order('nombre')
-  const { data: campos }   = await supabase.from('campos').select('id, nombre, cliente_id').order('nombre')
-  const { data: lotes }    = await supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre')
 
   const filtroHref = (extra) => {
     const p = new URLSearchParams()
@@ -67,6 +86,8 @@ export default async function SilobolsasPage({ searchParams }) {
     if (campoId)   p.set('campo', campoId)
     if (loteId)    p.set('lote', loteId)
     if (grano)     p.set('grano', grano)
+    if (desde)     p.set('desde', desde)
+    if (hasta)     p.set('hasta', hasta)
     Object.entries(extra).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k))
     const s = p.toString()
     return '/dashboard/silobolsas' + (s ? '?' + s : '')
@@ -88,7 +109,7 @@ export default async function SilobolsasPage({ searchParams }) {
         </div>
       </div>
 
-      <FiltroBar clientes={clientes ?? []} campos={campos ?? []} lotes={lotes ?? []} basePath="/dashboard/silobolsas" />
+      <FiltroBar clientes={clientesList} campos={camposList} lotes={lotesList} basePath="/dashboard/silobolsas" />
 
       <div className="bg-white rounded-2xl shadow overflow-x-auto">
         <table className="w-full text-sm">
@@ -105,9 +126,7 @@ export default async function SilobolsasPage({ searchParams }) {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {!silosFiltrados.length ? (
-              <tr>
-                <td colSpan={7} className="text-center py-10 text-gray-400">No hay silobolsas</td>
-              </tr>
+              <tr><td colSpan={7} className="text-center py-10 text-gray-400">No hay silobolsas</td></tr>
             ) : silosFiltrados.map(s => {
               const lote    = s.lotes
               const campo   = lote?.campos

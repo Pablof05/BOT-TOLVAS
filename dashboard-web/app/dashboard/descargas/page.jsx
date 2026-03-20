@@ -2,10 +2,12 @@ import { createAdminClient } from '../../../lib/supabase-admin'
 import DescargasTable from '../../../components/DescargasTable'
 
 export default async function DescargasPage({ searchParams }) {
-  const supabase = createAdminClient()
+  const supabase  = createAdminClient()
   const campoId   = searchParams?.campo   || ''
   const clienteId = searchParams?.cliente || ''
   const loteId    = searchParams?.lote    || ''
+  const desde     = searchParams?.desde   || ''
+  const hasta     = searchParams?.hasta   || ''
 
   const { data: clientes, error: errCl } = await supabase
     .from('clientes')
@@ -22,15 +24,8 @@ export default async function DescargasPage({ searchParams }) {
     )
   }
 
-  const { data: campos } = await supabase
-    .from('campos')
-    .select('id, nombre, cliente_id')
-    .order('nombre')
-
-  const { data: lotes } = await supabase
-    .from('lotes')
-    .select('id, nombre, grano, campo_id')
-    .order('nombre')
+  const { data: campos } = await supabase.from('campos').select('id, nombre, cliente_id').order('nombre')
+  const { data: lotes }  = await supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre')
 
   let query = supabase
     .from('descargas')
@@ -47,6 +42,8 @@ export default async function DescargasPage({ searchParams }) {
 
   if (clienteId) query = query.eq('cliente_id', clienteId)
   if (loteId)    query = query.eq('lote_id', loteId)
+  if (desde)     query = query.gte('created_at', desde)
+  if (hasta)     query = query.lte('created_at', hasta + 'T23:59:59')
 
   const { data: descargas } = await query
 
@@ -65,6 +62,8 @@ export default async function DescargasPage({ searchParams }) {
         clienteId={clienteId}
         campoId={campoId}
         loteId={loteId}
+        desde={desde}
+        hasta={hasta}
         isCliente={false}
       />
     </div>
