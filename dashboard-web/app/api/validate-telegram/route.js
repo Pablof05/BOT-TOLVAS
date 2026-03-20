@@ -48,5 +48,24 @@ export async function POST(request) {
     })
   }
 
+  // Buscar operario
+  const { data: operario } = await supabaseAdmin
+    .from('usuarios')
+    .select('id, nombre, user_id')
+    .eq('telegram_id', tid)
+    .eq('rol', 'operario')
+    .single()
+
+  if (operario) {
+    if (operario.user_id) {
+      return NextResponse.json({ error: 'Este ID ya tiene una cuenta registrada. Usá el login.' }, { status: 409 })
+    }
+    return NextResponse.json({
+      tipo: 'operario',
+      ref_id: operario.id,
+      nombre: operario.nombre,
+    })
+  }
+
   return NextResponse.json({ error: 'No encontramos ninguna cuenta con ese ID de Telegram.' }, { status: 404 })
 }
