@@ -78,6 +78,12 @@ def get_sesion(chat_id: str):
     ).eq("chat_id", chat_id).execute()
     return r.data[0] if r.data else None
 
+def get_sesion_por_contratista(contratista_id: int):
+    r = supabase.table("sesion_activa").select(
+        "*, clientes(nombre,apellido), campos(nombre), lotes(nombre,grano)"
+    ).eq("contratista_id", contratista_id).order("iniciada_at", desc=True).limit(1).execute()
+    return r.data[0] if r.data else None
+
 def get_campos(cliente_id: int):
     r = supabase.table("campos").select("*").eq("cliente_id", cliente_id).order("nombre").execute()
     return r.data or []
@@ -905,6 +911,10 @@ async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["contratista_id"] = contratista_id
     sesion = get_sesion(chat_id)
+
+    # Si el operario no tiene sesión propia, buscar la del contratista
+    if not sesion:
+        sesion = get_sesion_por_contratista(contratista_id)
 
     if sesion and sesion.get("lote_id"):
         cliente_obj = sesion.get("clientes") or {}

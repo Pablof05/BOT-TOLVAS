@@ -106,9 +106,9 @@ export default function DescargasTable({
                       {d.clientes ? `${d.clientes.nombre} ${d.clientes.apellido}` : '-'}
                     </td>
                   )}
-                  <td className="px-4 py-2">{d.silobolsas?.lotes?.campos?.nombre ?? '-'}</td>
-                  <td className="px-4 py-2">{d.silobolsas?.lotes?.nombre ?? '-'}</td>
-                  <td className="px-4 py-2 capitalize">{d.silobolsas?.lotes?.grano ?? '-'}</td>
+                  <td className="px-4 py-2">{d.lotes?.campos?.nombre ?? '-'}</td>
+                  <td className="px-4 py-2">{d.lotes?.nombre ?? '-'}</td>
+                  <td className="px-4 py-2 capitalize">{d.lotes?.grano ?? '-'}</td>
                   <td className="px-4 py-2">{d.silobolsas ? `#${d.silobolsas.numero}` : '-'}</td>
                   <td className="px-4 py-2">{d.camiones?.patente_chasis ?? '-'}</td>
                   <td className="px-4 py-2">{d.usuarios?.nombre ?? '-'}</td>

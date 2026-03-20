@@ -31,7 +31,8 @@ export default async function DescargasPage({ searchParams }) {
     .select(`
       id, kg, created_at,
       camiones(patente_chasis),
-      silobolsas(numero, lotes(nombre, grano, campos(nombre, id))),
+      silobolsas(numero),
+      lotes(nombre, grano, campos(nombre, id)),
       usuarios(nombre),
       clientes(nombre, apellido, id)
     `)
@@ -43,7 +44,7 @@ export default async function DescargasPage({ searchParams }) {
   const { data: descargas } = await query
 
   const descargasFiltradas = campoId
-    ? (descargas ?? []).filter(d => d.silobolsas?.lotes?.campos?.id == campoId)
+    ? (descargas ?? []).filter(d => d.lotes?.campos?.id == campoId)
     : (descargas ?? [])
 
   return (
