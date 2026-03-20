@@ -1,14 +1,4 @@
-import { createClient } from '../../../lib/supabase-server'
-
-async function getContratistaId(supabase) {
-  const { data: { user } } = await supabase.auth.getUser()
-  const { data } = await supabase
-    .from('contratistas')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-  return data?.id
-}
+import { createAdminClient } from '../../../lib/supabase-admin'
 
 function Badge({ cerrado }) {
   return cerrado
@@ -17,23 +7,28 @@ function Badge({ cerrado }) {
 }
 
 export default async function CamionesPage({ searchParams }) {
-  const supabase = createClient()
-  const contratistaId = await getContratistaId(supabase)
-
+  const supabase = createAdminClient()
   const soloActivos = searchParams?.filtro !== 'todos'
 
   let query = supabase
     .from('camiones')
-    .select('id, patente_chasis, patente_acoplado, capacidad_kg, cerrado')
-    .eq('contratista_id', contratistaId)
+    .select('id, patente_chasis, patente_acoplado, capacidad_kg, cerrado, contratista_id')
     .order('cerrado')
     .order('patente_chasis')
 
   if (soloActivos) query = query.eq('cerrado', false)
 
-  const { data: camiones } = await query
+  const { data: camiones, error } = await query
 
-  // Kg cargados por camión
+  if (error) {
+    return (
+      <div className="p-6 bg-red-50 rounded-xl text-red-700">
+        <p className="font-semibold">Error al cargar camiones</p>
+        <p className="text-sm mt-1">{error.message}</p>
+      </div>
+    )
+  }
+
   const ids = camiones?.map(c => c.id) ?? []
   const { data: descargas } = ids.length
     ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', ids)

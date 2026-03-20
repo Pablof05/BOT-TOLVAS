@@ -1,14 +1,4 @@
-import { createClient } from '../../../lib/supabase-server'
-
-async function getContratistaId(supabase) {
-  const { data: { user } } = await supabase.auth.getUser()
-  const { data } = await supabase
-    .from('contratistas')
-    .select('id')
-    .eq('user_id', user.id)
-    .single()
-  return data?.id
-}
+import { createAdminClient } from '../../../lib/supabase-admin'
 
 function TagVinculado({ telegramId }) {
   return telegramId
@@ -17,24 +7,30 @@ function TagVinculado({ telegramId }) {
 }
 
 export default async function UsuariosPage({ searchParams }) {
-  const supabase = createClient()
-  const contratistaId = await getContratistaId(supabase)
-
+  const supabase = createAdminClient()
   const tab = searchParams?.tab || 'operarios'
 
-  const [{ data: operarios }, { data: clientes }] = await Promise.all([
+  const [{ data: operarios, error: errOp }, { data: clientes, error: errCl }] = await Promise.all([
     supabase
       .from('usuarios')
       .select('id, nombre, rol, telegram_id, activo, codigo_acceso')
-      .eq('contratista_id', contratistaId)
       .eq('rol', 'operario')
       .order('nombre'),
     supabase
       .from('clientes')
       .select('id, nombre, apellido, telegram_id, codigo_acceso')
-      .eq('contratista_id', contratistaId)
       .order('nombre'),
   ])
+
+  if (errOp || errCl) {
+    const msg = errOp?.message || errCl?.message
+    return (
+      <div className="p-6 bg-red-50 rounded-xl text-red-700">
+        <p className="font-semibold">Error al cargar usuarios</p>
+        <p className="text-sm mt-1">{msg}</p>
+      </div>
+    )
+  }
 
   const isOperarios = tab === 'operarios'
 
@@ -42,7 +38,6 @@ export default async function UsuariosPage({ searchParams }) {
     <div>
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Usuarios</h1>
 
-      {/* Tabs */}
       <div className="flex gap-2 mb-5">
         <a
           href="/dashboard/usuarios?tab=operarios"
