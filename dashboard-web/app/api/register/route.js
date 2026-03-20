@@ -52,6 +52,16 @@ export async function POST(request) {
       await supabaseAdmin.auth.admin.deleteUser(user_id)
       return NextResponse.json({ error: 'Error al vincular la cuenta' }, { status: 500 })
     }
+  } else if (tipo === 'operario') {
+    const { error } = await supabaseAdmin
+      .from('usuarios')
+      .update({ user_id })
+      .eq('id', ref_id)
+
+    if (error) {
+      await supabaseAdmin.auth.admin.deleteUser(user_id)
+      return NextResponse.json({ error: 'Error al vincular la cuenta' }, { status: 500 })
+    }
   }
 
   return NextResponse.json({ ok: true })

@@ -56,6 +56,26 @@ export default async function DashboardPage() {
     )
   }
 
+  // Vista operario
+  if (userProfile?.role === 'operario') {
+    const operarioId = userProfile.profile.id
+    const { data: descargas } = await supabase
+      .from('descargas')
+      .select('kg, lote_id, campo_id, silobolsa_id, created_at')
+      .eq('operario_id', operarioId)
+      .order('created_at', { ascending: false })
+
+    return (
+      <div className="p-6">
+        <h2 className="text-xl font-bold text-green-800 mb-4">
+          Bienvenido, {userProfile.profile.nombre}
+        </h2>
+        <p className="text-gray-600 mb-2">Total de descargas registradas: <strong>{descargas?.length ?? 0}</strong></p>
+        <p className="text-gray-600">Kg totales: <strong>{(descargas ?? []).reduce((s, d) => s + (d.kg ?? 0), 0).toLocaleString('es-AR')}</strong></p>
+      </div>
+    )
+  }
+
   // Vista contratista
   const contratistaId = userProfile?.profile?.id
   if (!contratistaId) {

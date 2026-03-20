@@ -50,5 +50,17 @@ export async function getUserProfile() {
     return { user, role: 'cliente', profile: clienteLegacy }
   }
 
+  // Intentar como operario
+  const { data: operario } = await supabase
+    .from('usuarios')
+    .select('id, nombre, contratista_id')
+    .eq('user_id', user.id)
+    .eq('rol', 'operario')
+    .single()
+
+  if (operario) {
+    return { user, role: 'operario', profile: operario }
+  }
+
   return { user, role: null, profile: null }
 }
