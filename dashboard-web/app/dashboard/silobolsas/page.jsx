@@ -25,8 +25,9 @@ export default async function SilobolsasPage({ searchParams }) {
   const soloActivas = searchParams?.filtro !== 'todas'
   const clienteId   = searchParams?.cliente || ''
   const campoId     = searchParams?.campo   || ''
+  const loteId      = searchParams?.lote    || ''
+  const grano       = searchParams?.grano   || ''
 
-  // Silobolsas con lote → campo → cliente
   let query = supabase
     .from('silobolsas')
     .select('id, numero, cerrado, lotes(id, nombre, grano, campos(id, nombre, cliente_id, clientes(id, nombre, apellido)))')
@@ -35,7 +36,6 @@ export default async function SilobolsasPage({ searchParams }) {
   if (soloActivas) query = query.eq('cerrado', false)
   const { data: silobolsas } = await query
 
-  // Kg acumulado por silobolsa
   const siloIds = silobolsas?.map(s => s.id) ?? []
   const { data: descargas } = siloIds.length
     ? await supabase.from('descargas').select('silobolsa_id, kg').in('silobolsa_id', siloIds)
@@ -45,36 +45,50 @@ export default async function SilobolsasPage({ searchParams }) {
     kgPorSilo[d.silobolsa_id] = (kgPorSilo[d.silobolsa_id] || 0) + (d.kg || 0)
   })
 
-  // Filtrar por cliente / campo
+  // Filtrar
   const silosFiltrados = (silobolsas ?? []).filter(s => {
-    const campo   = s.lotes?.campos
+    const lote    = s.lotes
+    const campo   = lote?.campos
     const cliente = campo?.clientes
-    if (clienteId && cliente?.id != clienteId) return false
-    if (campoId   && campo?.id   != campoId)   return false
+    if (clienteId && cliente?.id != clienteId)                              return false
+    if (campoId   && campo?.id   != campoId)                                return false
+    if (loteId    && lote?.id    != loteId)                                 return false
+    if (grano     && lote?.grano?.toLowerCase() != grano.toLowerCase())     return false
     return true
   })
 
-  // Para los filtros dropdown
   const { data: clientes } = await supabase.from('clientes').select('id, nombre, apellido').order('nombre')
   const { data: campos }   = await supabase.from('campos').select('id, nombre, cliente_id').order('nombre')
+  const { data: lotes }    = await supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre')
+
+  const filtroHref = (extra) => {
+    const p = new URLSearchParams()
+    if (clienteId) p.set('cliente', clienteId)
+    if (campoId)   p.set('campo', campoId)
+    if (loteId)    p.set('lote', loteId)
+    if (grano)     p.set('grano', grano)
+    Object.entries(extra).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k))
+    const s = p.toString()
+    return '/dashboard/silobolsas' + (s ? '?' + s : '')
+  }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">Silobolsas</h1>
         <div className="flex gap-2">
-          <a href="/dashboard/silobolsas"
+          <a href={filtroHref({ filtro: '' })}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${soloActivas ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
             Activas
           </a>
-          <a href={`/dashboard/silobolsas?filtro=todas${clienteId ? '&cliente=' + clienteId : ''}${campoId ? '&campo=' + campoId : ''}`}
+          <a href={filtroHref({ filtro: 'todas' })}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${!soloActivas ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
             Todas
           </a>
         </div>
       </div>
 
-      <FiltroBar clientes={clientes ?? []} campos={campos ?? []} basePath="/dashboard/silobolsas" />
+      <FiltroBar clientes={clientes ?? []} campos={campos ?? []} lotes={lotes ?? []} basePath="/dashboard/silobolsas" />
 
       <div className="bg-white rounded-2xl shadow overflow-x-auto">
         <table className="w-full text-sm">
@@ -98,7 +112,6 @@ export default async function SilobolsasPage({ searchParams }) {
               const lote    = s.lotes
               const campo   = lote?.campos
               const cliente = campo?.clientes
-              const kg      = kgPorSilo[s.id] || 0
               return (
                 <tr key={s.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-semibold">#{s.numero}</td>
@@ -106,7 +119,7 @@ export default async function SilobolsasPage({ searchParams }) {
                   <td className="px-4 py-3">{campo?.nombre ?? '-'}</td>
                   <td className="px-4 py-3">{lote?.nombre ?? '-'}</td>
                   <td className="px-4 py-3"><GranoBadge grano={lote?.grano} /></td>
-                  <td className="px-4 py-3 text-right font-semibold">{kg.toLocaleString('es-AR')} kg</td>
+                  <td className="px-4 py-3 text-right font-semibold">{(kgPorSilo[s.id] || 0).toLocaleString('es-AR')} kg</td>
                   <td className="px-4 py-3"><Badge cerrado={s.cerrado} /></td>
                 </tr>
               )
