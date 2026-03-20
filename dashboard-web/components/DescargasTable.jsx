@@ -8,7 +8,7 @@ function fmt(fecha) {
 }
 
 export default function DescargasTable({
-  descargas, clientes, campos, lotes, clienteId, campoId, loteId, isCliente
+  descargas, clientes, campos, lotes, clienteId, campoId, loteId, desde, hasta, isCliente
 }) {
   const router = useRouter()
   const params = useSearchParams()
@@ -29,6 +29,8 @@ export default function DescargasTable({
     : campos.filter(c => !clienteId || c.cliente_id == clienteId)
 
   const lotesFiltrados = lotes.filter(l => !campoId || l.campo_id == campoId)
+
+  const hayFiltros = clienteId || campoId || loteId || desde || hasta
 
   return (
     <div>
@@ -71,7 +73,13 @@ export default function DescargasTable({
           ))}
         </select>
 
-        {(clienteId || campoId || loteId) && (
+        <input type="date" value={desde || ''} onChange={e => setFilter('desde', e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+
+        <input type="date" value={hasta || ''} onChange={e => setFilter('hasta', e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+
+        {hayFiltros && (
           <button
             onClick={() => router.push('/dashboard/descargas')}
             className="text-sm text-red-500 hover:underline"

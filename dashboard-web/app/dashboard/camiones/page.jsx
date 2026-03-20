@@ -14,6 +14,8 @@ export default async function CamionesPage({ searchParams }) {
   const campoId     = searchParams?.campo   || ''
   const loteId      = searchParams?.lote    || ''
   const grano       = searchParams?.grano   || ''
+  const desde       = searchParams?.desde   || ''
+  const hasta       = searchParams?.hasta   || ''
 
   let camionesQuery = supabase
     .from('camiones')
@@ -24,12 +26,15 @@ export default async function CamionesPage({ searchParams }) {
   const { data: camiones } = await camionesQuery
 
   const ids = camiones?.map(c => c.id) ?? []
-  const { data: descargas } = ids.length
-    ? await supabase
+  let descQuery = ids.length
+    ? supabase
         .from('descargas')
-        .select('camion_id, kg, lote_id, lotes(id, nombre, grano, campos(id, nombre, cliente_id, clientes(id, nombre, apellido)))')
+        .select('camion_id, kg, lote_id, created_at, lotes(id, nombre, grano, campos(id, nombre, cliente_id, clientes(id, nombre, apellido)))')
         .in('camion_id', ids)
-    : { data: [] }
+    : null
+  if (descQuery && desde) descQuery = descQuery.gte('created_at', desde)
+  if (descQuery && hasta) descQuery = descQuery.lte('created_at', hasta + 'T23:59:59')
+  const { data: descargas } = descQuery ? await descQuery : { data: [] }
 
   // Agregar kg y lotes únicos por camión
   const porCamion = {}
@@ -40,7 +45,22 @@ export default async function CamionesPage({ searchParams }) {
     if (d.lotes && d.lote_id) porCamion[cid].lotes.set(d.lote_id, d.lotes)
   }
 
-  // Filtrar
+  // Derivar opciones de filtro de los datos reales
+  const clientesMap = new Map()
+  const camposMap   = new Map()
+  const lotesMap    = new Map()
+  for (const datos of Object.values(porCamion)) {
+    for (const l of datos.lotes.values()) {
+      if (l.campos?.clientes) clientesMap.set(l.campos.clientes.id, l.campos.clientes)
+      if (l.campos)           camposMap.set(l.campos.id, { ...l.campos, cliente_id: l.campos.cliente_id })
+      lotesMap.set(l.id, { id: l.id, nombre: l.nombre, grano: l.grano, campo_id: l.campos?.id })
+    }
+  }
+  const clientesList = [...clientesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const camposList   = [...camposMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const lotesList    = [...lotesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+
+  // Filtrar camiones
   const camionesFiltrados = (camiones ?? []).filter(c => {
     const lotes = [...(porCamion[c.id]?.lotes?.values() ?? [])]
     if (clienteId && !lotes.some(l => l.campos?.clientes?.id == clienteId)) return false
@@ -50,16 +70,14 @@ export default async function CamionesPage({ searchParams }) {
     return true
   })
 
-  const { data: clientes } = await supabase.from('clientes').select('id, nombre, apellido').order('nombre')
-  const { data: campos }   = await supabase.from('campos').select('id, nombre, cliente_id').order('nombre')
-  const { data: lotes }    = await supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre')
-
   const filtroHref = (extra) => {
     const p = new URLSearchParams()
     if (clienteId) p.set('cliente', clienteId)
     if (campoId)   p.set('campo', campoId)
     if (loteId)    p.set('lote', loteId)
     if (grano)     p.set('grano', grano)
+    if (desde)     p.set('desde', desde)
+    if (hasta)     p.set('hasta', hasta)
     Object.entries(extra).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k))
     const s = p.toString()
     return '/dashboard/camiones' + (s ? '?' + s : '')
@@ -81,7 +99,7 @@ export default async function CamionesPage({ searchParams }) {
         </div>
       </div>
 
-      <FiltroBar clientes={clientes ?? []} campos={campos ?? []} lotes={lotes ?? []} basePath="/dashboard/camiones" />
+      <FiltroBar clientes={clientesList} campos={camposList} lotes={lotesList} basePath="/dashboard/camiones" />
 
       <div className="bg-white rounded-2xl shadow overflow-x-auto">
         <table className="w-full text-sm">
@@ -97,9 +115,7 @@ export default async function CamionesPage({ searchParams }) {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {!camionesFiltrados.length ? (
-              <tr>
-                <td colSpan={6} className="text-center py-10 text-gray-400">No hay camiones</td>
-              </tr>
+              <tr><td colSpan={6} className="text-center py-10 text-gray-400">No hay camiones</td></tr>
             ) : camionesFiltrados.map(c => {
               const datos = porCamion[c.id]
               const kg    = datos?.kg ?? 0
@@ -111,7 +127,7 @@ export default async function CamionesPage({ searchParams }) {
                   <td className="px-4 py-3">{c.capacidad_kg ? `${c.capacidad_kg.toLocaleString('es-AR')} kg` : '-'}</td>
                   <td className="px-4 py-3">
                     {lotesList.length === 0 ? (
-                      <span className="text-gray-400">Sin descargas</span>
+                      <span className="text-gray-400">Sin descargas{desde || hasta ? ' en el período' : ''}</span>
                     ) : (
                       <div className="space-y-1">
                         {lotesList.map(l => (
