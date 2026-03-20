@@ -36,13 +36,10 @@ export default function DescargasTable({
   return (
     <div>
       {/* Filtros */}
-      <div className="flex flex-wrap gap-3 mb-5">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 mb-5">
         {!isCliente && (
-          <select
-            value={clienteId}
-            onChange={e => setFilter('cliente', e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          >
+          <select value={clienteId} onChange={e => setFilter('cliente', e.target.value)}
+            className="w-full sm:w-auto border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500">
             <option value="">Todos los clientes</option>
             {clientes.map(c => (
               <option key={c.id} value={c.id}>{c.nombre} {c.apellido}</option>
@@ -50,22 +47,16 @@ export default function DescargasTable({
           </select>
         )}
 
-        <select
-          value={campoId}
-          onChange={e => setFilter('campo', e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-        >
+        <select value={campoId} onChange={e => setFilter('campo', e.target.value)}
+          className="w-full sm:w-auto border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500">
           <option value="">Todos los campos</option>
           {camposFiltrados.map(c => (
             <option key={c.id} value={c.id}>{c.nombre}</option>
           ))}
         </select>
 
-        <select
-          value={loteId}
-          onChange={e => setFilter('lote', e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-        >
+        <select value={loteId} onChange={e => setFilter('lote', e.target.value)}
+          className="w-full sm:w-auto border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500">
           <option value="">Todos los lotes</option>
           {lotesFiltrados.map(l => (
             <option key={l.id} value={l.id}>
@@ -74,17 +65,16 @@ export default function DescargasTable({
           ))}
         </select>
 
-        <input type="date" value={desde || ''} onChange={e => setFilter('desde', e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-
-        <input type="date" value={hasta || ''} onChange={e => setFilter('hasta', e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+        <div className="flex gap-2">
+          <input type="date" value={desde || ''} onChange={e => setFilter('desde', e.target.value)}
+            className="flex-1 sm:flex-none border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500" />
+          <input type="date" value={hasta || ''} onChange={e => setFilter('hasta', e.target.value)}
+            className="flex-1 sm:flex-none border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500" />
+        </div>
 
         {hayFiltros && (
-          <button
-            onClick={() => router.push(basePath)}
-            className="text-sm text-red-500 hover:underline"
-          >
+          <button onClick={() => router.push(basePath)}
+            className="w-full sm:w-auto text-sm text-red-500 hover:underline py-2">
             Limpiar filtros
           </button>
         )}

@@ -7,7 +7,7 @@ function Badge({ cerrado }) {
     : <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 font-medium">Activo</span>
 }
 
-export default async function CamionesContent({ basePath, searchParams, fixedClienteId = null }) {
+export default async function CamionesContent({ basePath, searchParams, fixedClienteId = null, allowedClienteIds = null }) {
   const supabase    = createAdminClient()
   const soloActivos = searchParams?.filtro !== 'todos'
   const clienteId   = searchParams?.cliente || ''
@@ -32,7 +32,8 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
         .select('camion_id, kg, lote_id, created_at, lotes(id, nombre, grano, campos(id, nombre, cliente_id, clientes(id, nombre, apellido)))')
         .in('camion_id', ids)
     : null
-  if (descQuery && fixedClienteId) descQuery = descQuery.eq('cliente_id', fixedClienteId)
+  if (descQuery && fixedClienteId)            descQuery = descQuery.eq('cliente_id', fixedClienteId)
+  if (descQuery && allowedClienteIds?.length) descQuery = descQuery.in('cliente_id', allowedClienteIds)
   if (descQuery && desde) descQuery = descQuery.gte('created_at', desde)
   if (descQuery && hasta) descQuery = descQuery.lte('created_at', hasta + 'T23:59:59')
   const { data: descargas } = descQuery ? await descQuery : { data: [] }
@@ -55,7 +56,9 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
       lotesMap.set(l.id, { id: l.id, nombre: l.nombre, grano: l.grano, campo_id: l.campos?.id })
     }
   }
-  const clientesList = [...clientesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const clientesList = [...clientesMap.values()]
+    .filter(c => !allowedClienteIds || allowedClienteIds.includes(c.id))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre))
   const camposList   = [...camposMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
   const lotesList    = [...lotesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
 
