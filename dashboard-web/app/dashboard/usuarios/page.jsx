@@ -1,4 +1,5 @@
 import { createAdminClient } from '../../../lib/supabase-admin'
+import CopiarLink from '../../../components/CopiarLink'
 
 function TagVinculado({ telegramId }) {
   return telegramId
@@ -13,8 +14,7 @@ export default async function UsuariosPage({ searchParams }) {
   const [{ data: operarios, error: errOp }, { data: clientes, error: errCl }] = await Promise.all([
     supabase
       .from('usuarios')
-      .select('id, nombre, rol, telegram_id, activo, codigo_acceso')
-      .eq('rol', 'operario')
+      .select('id, nombre, telegram_id, activo, codigo_acceso')
       .order('nombre'),
     supabase
       .from('clientes')
@@ -33,6 +33,7 @@ export default async function UsuariosPage({ searchParams }) {
   }
 
   const isOperarios = tab === 'operarios'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || ''
 
   return (
     <div>
@@ -66,12 +67,13 @@ export default async function UsuariosPage({ searchParams }) {
                 <th className="px-4 py-3">Código de acceso</th>
                 <th className="px-4 py-3">Estado Telegram</th>
                 <th className="px-4 py-3">Activo</th>
+                <th className="px-4 py-3">Portal</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {!operarios?.length ? (
                 <tr>
-                  <td colSpan={4} className="text-center py-10 text-gray-400">No hay operarios</td>
+                  <td colSpan={5} className="text-center py-10 text-gray-400">No hay operarios</td>
                 </tr>
               ) : operarios.map(o => (
                 <tr key={o.id} className="hover:bg-gray-50">
@@ -82,6 +84,12 @@ export default async function UsuariosPage({ searchParams }) {
                     {o.activo
                       ? <span className="text-green-600 font-medium">Sí</span>
                       : <span className="text-gray-400">No</span>
+                    }
+                  </td>
+                  <td className="px-4 py-3">
+                    {o.codigo_acceso
+                      ? <CopiarLink url={`${baseUrl}/operario/${o.codigo_acceso}`} />
+                      : <span className="text-xs text-gray-400">Sin código</span>
                     }
                   </td>
                 </tr>
@@ -97,18 +105,25 @@ export default async function UsuariosPage({ searchParams }) {
                 <th className="px-4 py-3">Nombre</th>
                 <th className="px-4 py-3">Código de acceso</th>
                 <th className="px-4 py-3">Estado Telegram</th>
+                <th className="px-4 py-3">Portal</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {!clientes?.length ? (
                 <tr>
-                  <td colSpan={3} className="text-center py-10 text-gray-400">No hay clientes</td>
+                  <td colSpan={4} className="text-center py-10 text-gray-400">No hay clientes</td>
                 </tr>
               ) : clientes.map(c => (
                 <tr key={c.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{c.nombre} {c.apellido}</td>
                   <td className="px-4 py-3 font-mono text-gray-500">{c.codigo_acceso || '-'}</td>
                   <td className="px-4 py-3"><TagVinculado telegramId={c.telegram_id} /></td>
+                  <td className="px-4 py-3">
+                    {c.codigo_acceso
+                      ? <CopiarLink url={`${baseUrl}/cliente/${c.codigo_acceso}`} />
+                      : <span className="text-xs text-gray-400">Sin código</span>
+                    }
+                  </td>
                 </tr>
               ))}
             </tbody>

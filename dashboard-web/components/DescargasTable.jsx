@@ -8,7 +8,8 @@ function fmt(fecha) {
 }
 
 export default function DescargasTable({
-  descargas, clientes, campos, lotes, clienteId, campoId, loteId, desde, hasta, isCliente
+  descargas, clientes, campos, lotes, clienteId, campoId, loteId, desde, hasta, isCliente,
+  basePath = '/dashboard/descargas'
 }) {
   const router = useRouter()
   const params = useSearchParams()
@@ -19,7 +20,7 @@ export default function DescargasTable({
     else p.delete(key)
     if (key === 'cliente') { p.delete('campo'); p.delete('lote') }
     if (key === 'campo')   { p.delete('lote') }
-    router.push('/dashboard/descargas?' + p.toString())
+    router.push(basePath + '?' + p.toString())
   }
 
   const totalKg = descargas.reduce((acc, d) => acc + (d.kg || 0), 0)
@@ -81,7 +82,7 @@ export default function DescargasTable({
 
         {hayFiltros && (
           <button
-            onClick={() => router.push('/dashboard/descargas')}
+            onClick={() => router.push(basePath)}
             className="text-sm text-red-500 hover:underline"
           >
             Limpiar filtros
