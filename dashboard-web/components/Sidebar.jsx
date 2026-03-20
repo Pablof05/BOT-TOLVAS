@@ -18,11 +18,15 @@ const navCliente = [
   { href: '/dashboard/descargas',    label: 'Descargas',  icon: '🚜' },
 ]
 
-export default function Sidebar({ role, profile }) {
+export default function Sidebar({ role, profile, basePath = '/dashboard' }) {
   const pathname = usePathname()
   const router = useRouter()
 
-  const navItems = role === 'cliente' ? navCliente : navContratista
+  const baseNav = role === 'cliente' ? navCliente : navContratista
+  const navItems = baseNav.map(item => ({
+    ...item,
+    href: item.href.replace('/dashboard', basePath),
+  }))
 
   async function handleLogout() {
     const supabase = createClient()
