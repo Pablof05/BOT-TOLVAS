@@ -20,10 +20,13 @@ export default async function Page({ params, searchParams }) {
   const desde     = searchParams?.desde  || ''
   const hasta     = searchParams?.hasta  || ''
 
-  const [{ data: campos }, { data: lotes }] = await Promise.all([
-    supabase.from('campos').select('id, nombre, cliente_id').eq('cliente_id', clienteId).order('nombre'),
-    supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre'),
-  ])
+  const { data: campos } = await supabase
+    .from('campos').select('id, nombre, cliente_id').eq('cliente_id', clienteId).order('nombre')
+
+  const campoIds = (campos ?? []).map(c => c.id)
+  const { data: lotes } = campoIds.length
+    ? await supabase.from('lotes').select('id, nombre, grano, campo_id').in('campo_id', campoIds).order('nombre')
+    : { data: [] }
 
   let query = supabase
     .from('descargas')
