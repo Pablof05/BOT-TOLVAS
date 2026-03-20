@@ -78,6 +78,12 @@ def get_sesion(chat_id: str):
     ).eq("chat_id", chat_id).execute()
     return r.data[0] if r.data else None
 
+def get_sesion_por_contratista(contratista_id: int):
+    r = supabase.table("sesion_activa").select(
+        "*, clientes(nombre,apellido), campos(nombre), lotes(nombre,grano)"
+    ).eq("contratista_id", contratista_id).order("iniciada_at", desc=True).limit(1).execute()
+    return r.data[0] if r.data else None
+
 def get_campos(cliente_id: int):
     r = supabase.table("campos").select("*").eq("cliente_id", cliente_id).order("nombre").execute()
     return r.data or []
@@ -904,7 +910,7 @@ async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["contratista_id"] = contratista_id
-    sesion = get_sesion(chat_id)
+    sesion = get_sesion_por_contratista(contratista_id)
 
     if sesion and sesion.get("lote_id"):
         cliente_obj = sesion.get("clientes") or {}
@@ -1121,9 +1127,8 @@ async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("¿A dónde va la descarga?", reply_markup=InlineKeyboardMarkup(botones))
     return DESC_TIPO_DESTINO
 
-async def _guardar_sesion(context, chat_id):
+async def _guardar_sesion(context, chat_id=None):
     supabase.table("sesion_activa").upsert({
-        "chat_id":        chat_id,
         "contratista_id": context.user_data["contratista_id"],
         "cliente_id":     context.user_data["desc_cliente_id"],
         "campo_id":       context.user_data["desc_campo_id"],
@@ -1181,7 +1186,7 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         return DESC_CAMION_CHASIS
 
     if data == "desc_nuevo_silo":
-        sesion  = get_sesion(str(query.message.chat_id))
+        sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
         lote_id = context.user_data.get("desc_lote_id") or (sesion["lote_id"] if sesion else None)
         if not lote_id:
             await query.edit_message_text("No se encontró el lote. Iniciá la sesión de nuevo.")
@@ -1358,8 +1363,7 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DESC_KG
 
     context.user_data["desc_kg"] = kg
-    chat_id = str(update.effective_chat.id)
-    sesion  = get_sesion(chat_id)
+    sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
 
     cliente_str = context.user_data.get("desc_cliente_str") or ""
     campo_str   = context.user_data.get("desc_campo_str")   or ""
@@ -1408,7 +1412,7 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DESC_KG
 
     if data == "desc_cambiar_cliente":
-        sesion = get_sesion(chat_id)
+        sesion = get_sesion_por_contratista(context.user_data["contratista_id"])
         context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
         context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
         return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
@@ -1429,9 +1433,9 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg             = context.user_data["desc_kg"]
     destino_id     = context.user_data["desc_destino_id"]
     tipo           = context.user_data.get("desc_tipo", "camion")
-    sesion         = get_sesion(chat_id)
-    operario       = get_usuario(uid)
     contratista_id = context.user_data["contratista_id"]
+    sesion         = get_sesion_por_contratista(contratista_id)
+    operario       = get_usuario(uid)
 
     lote_id    = context.user_data.get("desc_lote_id")   or (sesion["lote_id"]   if sesion else None)
     campo_id   = context.user_data.get("desc_campo_id")  or (sesion["campo_id"]  if sesion else None)
@@ -1658,7 +1662,8 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         return DESC_KG
 
     if accion == "desc_continuar":
-        sesion = get_sesion(str(query.message.chat_id))
+        contratista_id = get_contratista_id_de_usuario(uid)
+        sesion = get_sesion_por_contratista(contratista_id)
         if sesion:
             context.user_data["contratista_id"]   = sesion["contratista_id"]
             context.user_data["desc_cliente_id"]  = sesion["cliente_id"]
@@ -1673,8 +1678,8 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         return await mostrar_tipo_destino(query, context)
 
     if accion == "desc_cambiar":
-        sesion         = get_sesion(str(query.message.chat_id))
         contratista_id = get_contratista_id_de_usuario(uid)
+        sesion         = get_sesion_por_contratista(contratista_id)
         context.user_data["contratista_id"]       = contratista_id
         context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
         context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None

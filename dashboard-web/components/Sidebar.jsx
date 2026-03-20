@@ -5,10 +5,11 @@ import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '../lib/supabase'
 
 const navContratista = [
-  { href: '/dashboard',           label: 'Resumen',   icon: '📊' },
-  { href: '/dashboard/descargas', label: 'Descargas', icon: '🚜' },
-  { href: '/dashboard/camiones',  label: 'Camiones',  icon: '🚛' },
-  { href: '/dashboard/usuarios',  label: 'Usuarios',  icon: '👥' },
+  { href: '/dashboard',              label: 'Resumen',    icon: '📊' },
+  { href: '/dashboard/descargas',    label: 'Descargas',  icon: '🚜' },
+  { href: '/dashboard/camiones',     label: 'Camiones',   icon: '🚛' },
+  { href: '/dashboard/silobolsas',   label: 'Silobolsas', icon: '🌾' },
+  { href: '/dashboard/usuarios',     label: 'Usuarios',   icon: '👥' },
 ]
 
 const navCliente = [
