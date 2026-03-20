@@ -2,7 +2,6 @@
 
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
-import { redirect } from 'next/navigation'
 
 export async function loginAction(formData) {
   const email = formData.get('email')
@@ -31,5 +30,5 @@ export async function loginAction(formData) {
     return { error: error.message }
   }
 
-  redirect('/dashboard')
+  return { success: true }
 }

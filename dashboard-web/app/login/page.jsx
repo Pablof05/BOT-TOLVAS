@@ -1,10 +1,12 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { loginAction } from './actions'
 import Link from 'next/link'
 
 export default function LoginPage() {
+  const router = useRouter()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -19,8 +21,9 @@ export default function LoginPage() {
     if (result?.error) {
       setError(result.error)
       setLoading(false)
+    } else if (result?.success) {
+      router.push('/dashboard')
     }
-    // Si no hay error, loginAction hace redirect('/dashboard') automáticamente
   }
 
   return (
