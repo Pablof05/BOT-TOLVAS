@@ -20,15 +20,34 @@ export async function getUserProfile() {
     return { user, role: 'contratista', profile: contratista }
   }
 
-  // Si no, intentar como cliente
-  const { data: cliente } = await supabase
+  // Intentar como cliente via tabla cliente_usuarios (soporte multi-empleado)
+  const { data: clienteUsuario } = await supabase
+    .from('cliente_usuarios')
+    .select('cliente_id')
+    .eq('user_id', user.id)
+    .single()
+
+  if (clienteUsuario) {
+    const { data: cliente } = await supabase
+      .from('clientes')
+      .select('id, nombre, apellido, contratista_id')
+      .eq('id', clienteUsuario.cliente_id)
+      .single()
+
+    if (cliente) {
+      return { user, role: 'cliente', profile: cliente }
+    }
+  }
+
+  // Fallback: user_id directo en clientes (cuentas previas)
+  const { data: clienteLegacy } = await supabase
     .from('clientes')
     .select('id, nombre, apellido, contratista_id')
     .eq('user_id', user.id)
     .single()
 
-  if (cliente) {
-    return { user, role: 'cliente', profile: cliente }
+  if (clienteLegacy) {
+    return { user, role: 'cliente', profile: clienteLegacy }
   }
 
   return { user, role: null, profile: null }
