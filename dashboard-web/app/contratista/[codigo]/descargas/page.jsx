@@ -1,4 +1,5 @@
 import { createAdminClient } from '../../../../lib/supabase-admin'
+import { notFound } from 'next/navigation'
 import DescargasTable from '../../../../components/DescargasTable'
 
 export default async function Page({ params, searchParams }) {
@@ -10,8 +11,16 @@ export default async function Page({ params, searchParams }) {
   const desde     = searchParams?.desde   || ''
   const hasta     = searchParams?.hasta   || ''
 
+  const { data: contratista } = await supabase
+    .from('contratistas')
+    .select('id')
+    .eq('codigo_acceso', codigo)
+    .single()
+
+  if (!contratista) notFound()
+
   const [{ data: clientes }, { data: campos }, { data: lotes }] = await Promise.all([
-    supabase.from('clientes').select('id, nombre, apellido').order('nombre'),
+    supabase.from('clientes').select('id, nombre, apellido').eq('contratista_id', contratista.id).order('nombre'),
     supabase.from('campos').select('id, nombre, cliente_id').order('nombre'),
     supabase.from('lotes').select('id, nombre, grano, campo_id').order('nombre'),
   ])

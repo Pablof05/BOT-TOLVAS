@@ -20,7 +20,7 @@ function GranoBadge({ grano }) {
   return <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${color}`}>{grano}</span>
 }
 
-export default async function SilobolsasContent({ basePath, searchParams, fixedClienteId = null }) {
+export default async function SilobolsasContent({ basePath, searchParams, fixedClienteId = null, allowedClienteIds = null }) {
   const supabase    = createAdminClient()
   const soloActivas = searchParams?.filtro !== 'todas'
   const clienteId   = searchParams?.cliente || ''
@@ -52,10 +52,12 @@ export default async function SilobolsasContent({ basePath, searchParams, fixedC
     kgPorSilo[d.silobolsa_id] = (kgPorSilo[d.silobolsa_id] || 0) + (d.kg || 0)
   })
 
-  // Para cliente fijo: filtrar por cliente_id después de la query (join anidado no soporta eq directo)
+  // Filtrar client-side (join anidado no soporta eq directo en supabase)
   const silosBase = fixedClienteId
     ? (silobolsas ?? []).filter(s => s.lotes?.campos?.clientes?.id == fixedClienteId)
-    : (silobolsas ?? [])
+    : allowedClienteIds?.length
+      ? (silobolsas ?? []).filter(s => allowedClienteIds.includes(s.lotes?.campos?.clientes?.id))
+      : (silobolsas ?? [])
 
   const clientesMap = new Map()
   const camposMap   = new Map()
@@ -68,7 +70,9 @@ export default async function SilobolsasContent({ basePath, searchParams, fixedC
     if (campo)   camposMap.set(campo.id, { id: campo.id, nombre: campo.nombre, cliente_id: campo.cliente_id })
     if (lote)    lotesMap.set(lote.id, { id: lote.id, nombre: lote.nombre, grano: lote.grano, campo_id: campo?.id })
   }
-  const clientesList = [...clientesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
+  const clientesList = [...clientesMap.values()]
+    .filter(c => !allowedClienteIds || allowedClienteIds.includes(c.id))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre))
   const camposList   = [...camposMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
   const lotesList    = [...lotesMap.values()].sort((a, b) => a.nombre.localeCompare(b.nombre))
 
