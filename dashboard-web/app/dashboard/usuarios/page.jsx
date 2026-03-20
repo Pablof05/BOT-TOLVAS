@@ -1,4 +1,6 @@
 import { createAdminClient } from '../../../lib/supabase-admin'
+import CopiarLink from '../../../components/CopiarLink'
+import { generarCodigoOperario, generarCodigoCliente } from '../../actions'
 
 function TagVinculado({ telegramId }) {
   return telegramId
@@ -13,8 +15,7 @@ export default async function UsuariosPage({ searchParams }) {
   const [{ data: operarios, error: errOp }, { data: clientes, error: errCl }] = await Promise.all([
     supabase
       .from('usuarios')
-      .select('id, nombre, rol, telegram_id, activo, codigo_acceso')
-      .eq('rol', 'operario')
+      .select('id, nombre, telegram_id, activo, codigo_acceso')
       .order('nombre'),
     supabase
       .from('clientes')
@@ -33,26 +34,19 @@ export default async function UsuariosPage({ searchParams }) {
   }
 
   const isOperarios = tab === 'operarios'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || ''
 
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Usuarios</h1>
 
       <div className="flex gap-2 mb-5">
-        <a
-          href="/dashboard/usuarios?tab=operarios"
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-            isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'
-          }`}
-        >
+        <a href="/dashboard/usuarios?tab=operarios"
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
           Operarios ({operarios?.length ?? 0})
         </a>
-        <a
-          href="/dashboard/usuarios?tab=clientes"
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-            !isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'
-          }`}
-        >
+        <a href="/dashboard/usuarios?tab=clientes"
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition ${!isOperarios ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
           Clientes ({clientes?.length ?? 0})
         </a>
       </div>
@@ -63,26 +57,32 @@ export default async function UsuariosPage({ searchParams }) {
             <thead>
               <tr className="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
                 <th className="px-4 py-3">Nombre</th>
-                <th className="px-4 py-3">Código de acceso</th>
                 <th className="px-4 py-3">Estado Telegram</th>
                 <th className="px-4 py-3">Activo</th>
+                <th className="px-4 py-3">Acceso al panel</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {!operarios?.length ? (
-                <tr>
-                  <td colSpan={4} className="text-center py-10 text-gray-400">No hay operarios</td>
-                </tr>
+                <tr><td colSpan={4} className="text-center py-10 text-gray-400">No hay operarios</td></tr>
               ) : operarios.map(o => (
                 <tr key={o.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{o.nombre}</td>
-                  <td className="px-4 py-3 font-mono text-gray-500">{o.codigo_acceso || '-'}</td>
                   <td className="px-4 py-3"><TagVinculado telegramId={o.telegram_id} /></td>
                   <td className="px-4 py-3">
-                    {o.activo
-                      ? <span className="text-green-600 font-medium">Sí</span>
-                      : <span className="text-gray-400">No</span>
-                    }
+                    {o.activo ? <span className="text-green-600 font-medium">Sí</span> : <span className="text-gray-400">No</span>}
+                  </td>
+                  <td className="px-4 py-3 flex items-center gap-2">
+                    {o.codigo_acceso ? (
+                      <CopiarLink url={`${baseUrl}/operario/${o.codigo_acceso}`} />
+                    ) : (
+                      <form action={generarCodigoOperario.bind(null, o.id)}>
+                        <button type="submit"
+                          className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition">
+                          Generar link
+                        </button>
+                      </form>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -95,20 +95,29 @@ export default async function UsuariosPage({ searchParams }) {
             <thead>
               <tr className="text-left text-gray-500 border-b text-xs uppercase tracking-wide">
                 <th className="px-4 py-3">Nombre</th>
-                <th className="px-4 py-3">Código de acceso</th>
                 <th className="px-4 py-3">Estado Telegram</th>
+                <th className="px-4 py-3">Acceso al panel</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {!clientes?.length ? (
-                <tr>
-                  <td colSpan={3} className="text-center py-10 text-gray-400">No hay clientes</td>
-                </tr>
+                <tr><td colSpan={3} className="text-center py-10 text-gray-400">No hay clientes</td></tr>
               ) : clientes.map(c => (
                 <tr key={c.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{c.nombre} {c.apellido}</td>
-                  <td className="px-4 py-3 font-mono text-gray-500">{c.codigo_acceso || '-'}</td>
                   <td className="px-4 py-3"><TagVinculado telegramId={c.telegram_id} /></td>
+                  <td className="px-4 py-3 flex items-center gap-2">
+                    {c.codigo_acceso ? (
+                      <CopiarLink url={`${baseUrl}/cliente/${c.codigo_acceso}`} />
+                    ) : (
+                      <form action={generarCodigoCliente.bind(null, c.id)}>
+                        <button type="submit"
+                          className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition">
+                          Generar link
+                        </button>
+                      </form>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -1,4 +1,4 @@
-import os, re, random, logging
+import os, re, random, secrets, logging
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 import openpyxl
@@ -215,6 +215,7 @@ def teclado_menu_contratista(contratista_id: int, telegram_id: str):
     botones   = [
         [InlineKeyboardButton(f"👷 Mis operarios ({len(operarios)})", callback_data="cont_ver_op")],
         [InlineKeyboardButton(f"👤 Mis clientes ({len(clientes)})",   callback_data="cont_ver_cli")],
+        [InlineKeyboardButton("🖥️ Mi código de acceso a panel web",   callback_data="cont_codigo_panel")],
         [InlineKeyboardButton("🚛 Mis camiones",  callback_data="op_camiones"),
          InlineKeyboardButton("🌾 Mis silobolsas", callback_data="op_silos")],
         [InlineKeyboardButton("📊 Mis descargas",                     callback_data="cont_ver_desc")],
@@ -661,6 +662,22 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         context.user_data["contratista_id"] = cont["id"]
         await query.edit_message_text("¿Nombre y apellido del cliente?")
         return ADD_CLI_NOMBRE
+
+    elif accion == "cont_codigo_panel":
+        r      = supabase.table("contratistas").select("codigo_acceso").eq("id", cont["id"]).single().execute()
+        codigo = (r.data or {}).get("codigo_acceso")
+        if not codigo:
+            codigo = secrets.token_urlsafe(16)
+            supabase.table("contratistas").update({"codigo_acceso": codigo}).eq("id", cont["id"]).execute()
+        link = f"{DASHBOARD_URL}/contratista/{codigo}"
+        await query.edit_message_text(
+            f"🖥️ *Tu acceso al panel web*\n\n"
+            f"`{link}`\n\n"
+            f"_Este link es tuyo y no cambia. No lo compartas con nadie._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="cont_volver")]])
+        )
+        return ConversationHandler.END
 
     elif accion == "cont_volver":
         await query.edit_message_text("¿Qué querés hacer?", reply_markup=teclado_menu_contratista(cont["id"], uid))
