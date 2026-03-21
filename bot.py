@@ -1238,13 +1238,19 @@ async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DESC_TIPO_DESTINO
 
 async def _guardar_sesion(context, chat_id=None):
-    supabase.table("sesion_activa").upsert({
-        "contratista_id": context.user_data["contratista_id"],
-        "cliente_id":     context.user_data["desc_cliente_id"],
-        "campo_id":       context.user_data["desc_campo_id"],
-        "lote_id":        context.user_data["desc_lote_id"],
-        "iniciada_at":    ahora().isoformat()
-    }).execute()
+    contratista_id = context.user_data.get("contratista_id")
+    if not contratista_id:
+        return
+    try:
+        supabase.table("sesion_activa").upsert({
+            "contratista_id": contratista_id,
+            "cliente_id":     context.user_data.get("desc_cliente_id"),
+            "campo_id":       context.user_data.get("desc_campo_id"),
+            "lote_id":        context.user_data.get("desc_lote_id"),
+            "iniciada_at":    ahora().isoformat()
+        }, on_conflict="contratista_id").execute()
+    except Exception:
+        pass  # fallo silencioso no debe bloquear el flujo
 
 async def mostrar_tipo_destino(query, context):
     botones = [
@@ -1469,7 +1475,7 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
 async def _mostrar_confirmacion(send_fn, context):
     """Envía/edita la pantalla de confirmación de descarga. send_fn puede ser
     message.reply_text o query.edit_message_text."""
-    sesion      = get_sesion_por_contratista(context.user_data["contratista_id"])
+    sesion      = get_sesion_por_contratista(context.user_data.get("contratista_id"))
     cliente_str = context.user_data.get("desc_cliente_str") or ""
     campo_str   = context.user_data.get("desc_campo_str")   or ""
     lote_str    = context.user_data.get("desc_lote_str")    or ""
@@ -1522,10 +1528,16 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DESC_KG
 
     if data == "desc_cambiar_campo":
-        return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
+        cliente_id = context.user_data.get("desc_cliente_id")
+        if not cliente_id:
+            return await _mostrar_confirmacion(query.edit_message_text, context)
+        return await mostrar_campos(query, context, cliente_id)
 
     if data == "desc_cambiar_lote":
-        return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
+        campo_id = context.user_data.get("desc_campo_id")
+        if not campo_id:
+            return await _mostrar_confirmacion(query.edit_message_text, context)
+        return await mostrar_lotes(query, context, campo_id)
 
     if data != "desc_confirmar":
         return DESC_KG
