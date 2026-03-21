@@ -1114,6 +1114,8 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if camion_grano and not lote_grano:
         context.user_data["desc_grano"] = camion_grano
         await _guardar_sesion(context, str(query.message.chat_id))
+        if context.user_data.get("desc_destino_id"):
+            return await _mostrar_confirmacion(query.edit_message_text, context)
         return await mostrar_tipo_destino(query, context)
 
     # Lote sin grano y sin referencia del camión → preguntar
@@ -1122,6 +1124,8 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["desc_grano"] = lote_grano
     await _guardar_sesion(context, str(query.message.chat_id))
+    if context.user_data.get("desc_destino_id"):
+        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
