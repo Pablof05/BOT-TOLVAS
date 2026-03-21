@@ -1457,10 +1457,8 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirmar",       callback_data="desc_confirmar")],
-        [InlineKeyboardButton("👤 Cambiar cliente", callback_data="desc_cambiar_cliente"),
-         InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo")],
-        [InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote"),
-         InlineKeyboardButton("🚛 Cambiar destino", callback_data="desc_cambiar_destino")],
+        [InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo"),
+         InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote")],
         [InlineKeyboardButton("⚖️ Cambiar kg",      callback_data="desc_cambiar_kg")],
         [btn_cancelar()]
     ])
@@ -1478,20 +1476,11 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("¿Cuántos kg?")
         return DESC_KG
 
-    if data == "desc_cambiar_cliente":
-        sesion = get_sesion_por_contratista(context.user_data["contratista_id"])
-        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
-        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
-        return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
-
     if data == "desc_cambiar_campo":
         return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
 
     if data == "desc_cambiar_lote":
         return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
-
-    if data == "desc_cambiar_destino":
-        return await mostrar_tipo_destino(query, context)
 
     if data != "desc_confirmar":
         return DESC_KG
