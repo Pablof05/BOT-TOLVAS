@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from 'next/cache'
 import { createAdminClient } from '../lib/supabase-admin'
 import FiltroBar from './FiltroBar'
 import AutoRefresh from './AutoRefresh'
@@ -60,6 +61,7 @@ function BarraCamion({ camion }) {
 }
 
 export default async function CamionesContent({ basePath, searchParams, fixedClienteId = null, allowedClienteIds = null }) {
+  noStore()
   const supabase    = createAdminClient()
   const soloActivos = searchParams?.filtro !== 'todos'
   const clienteId   = searchParams?.cliente || ''
