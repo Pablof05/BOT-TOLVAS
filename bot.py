@@ -1705,6 +1705,29 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 # ── Handler mensajes libres ──────────────────────────────────
+async def entrada_mensaje_libre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point de texto para registro_conv: si el usuario es conocido muestra menú,
+    si no lo es intenta validar el texto como código de acceso."""
+    uid  = str(update.effective_user.id)
+    cont = get_contratista(uid)
+    if cont:
+        await update.message.reply_text("¿Qué querés hacer?", reply_markup=teclado_menu_contratista(cont["id"], uid))
+        return ConversationHandler.END
+    usr = get_usuario(uid)
+    if usr:
+        await update.message.reply_text(f"Hola {usr['nombre']}! ¿Qué querés hacer?", reply_markup=teclado_menu_operario())
+        return ConversationHandler.END
+    cli = get_cliente_by_telegram(uid)
+    if cli:
+        cont_nombre = (cli.get("contratistas") or {}).get("nombre", "")
+        await update.message.reply_text(
+            f"Hola {cli['nombre']} {cli['apellido']}! Sos cliente de *{cont_nombre}*.\n¿Qué querés hacer?",
+            parse_mode="Markdown", reply_markup=teclado_menu_cliente()
+        )
+        return ConversationHandler.END
+    # Usuario desconocido: intentar validar el texto como código de acceso
+    return await ingresar_codigo(update, context)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     cont = get_contratista(uid)
@@ -1735,6 +1758,7 @@ if __name__ == "__main__":
         entry_points=[
             CommandHandler("start", cmd_start),
             CallbackQueryHandler(elegir_rol, pattern="^rol_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, entrada_mensaje_libre),
         ],
         states={
             REG_ROL:          [CallbackQueryHandler(elegir_rol, pattern="^rol_")],
