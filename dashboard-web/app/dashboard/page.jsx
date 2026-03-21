@@ -11,7 +11,7 @@ export default async function DashboardPage() {
     { data: clientes },
     { data: descargas, error },
   ] = await Promise.all([
-    supabase.from('camiones').select('id').eq('cerrado', false),
+    supabase.from('camiones').select('id, patente_chasis, patente_acoplado, capacidad_kg').eq('cerrado', false),
     supabase.from('camiones').select('id').eq('cerrado', true),
     supabase.from('usuarios').select('id').eq('rol', 'operario'),
     supabase.from('clientes').select('id'),
@@ -27,6 +27,21 @@ export default async function DashboardPage() {
     )
   }
 
+  const ids = (camionesAbiertos ?? []).map(c => c.id)
+  const { data: descargasCamiones } = ids.length
+    ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', ids)
+    : { data: [] }
+
+  const acumuladoPorCamion = {}
+  for (const d of descargasCamiones ?? []) {
+    acumuladoPorCamion[d.camion_id] = (acumuladoPorCamion[d.camion_id] ?? 0) + (d.kg || 0)
+  }
+
+  const camionesActivosData = (camionesAbiertos ?? []).map(c => ({
+    ...c,
+    acumulado: acumuladoPorCamion[c.id] ?? 0,
+  }))
+
   return (
     <DashboardContratista
       camionesAbiertos={camionesAbiertos?.length ?? 0}
@@ -34,6 +49,7 @@ export default async function DashboardPage() {
       operarios={operarios?.length ?? 0}
       clientes={clientes?.length ?? 0}
       descargas={descargas ?? []}
+      camionesActivosData={camionesActivosData}
     />
   )
 }
