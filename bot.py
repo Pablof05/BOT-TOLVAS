@@ -30,8 +30,7 @@ ARG = timezone(timedelta(hours=-3))
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
     CAM_CORREGIR_CAPACIDAD,
-    DESC_CONF_GRANO,
-) = range(23)
+) = range(22)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
@@ -120,12 +119,6 @@ def kg_acumulado_camion(camion_id: int):
     r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
 
-def get_grano_camion(camion_id: int):
-    """Retorna el grano de la descarga más reciente del camión, o None si no tiene."""
-    r = supabase.table("descargas").select("lotes(grano)").eq("camion_id", camion_id).order("created_at", desc=True).limit(1).execute()
-    if r.data:
-        return (r.data[0].get("lotes") or {}).get("grano") or None
-    return None
 
 def kg_acumulado_silo(silo_id: int):
     r = supabase.table("descargas").select("kg").eq("silobolsa_id", silo_id).execute()
@@ -1089,66 +1082,13 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = lote["nombre"]
 
-    lote_grano = lote.get("grano") or None
-
-    if context.user_data.get("desc_destino_id"):
-        # ── Flujo de cambio desde confirmación ─────────────────────────
-        # Usamos el grano que ya está en user_data (sin query adicional)
-        grano_actual = context.user_data.get("desc_grano") or None
-        iconos = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
-
-        if grano_actual and lote_grano and lote_grano != grano_actual:
-            # Granos distintos → advertir
-            context.user_data["desc_grano_lote"]  = lote_grano
-            context.user_data["desc_grano_camion"] = grano_actual
-            teclado = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{iconos.get(lote_grano,'🌾')} {lote_grano} (grano del lote)",       callback_data="conf_grano_lote")],
-                [InlineKeyboardButton(f"{iconos.get(grano_actual,'🌾')} {grano_actual} (grano del destino)", callback_data="conf_grano_camion")],
-                [btn_cancelar()],
-            ])
-            await query.edit_message_text(
-                f"⚠️ *Atención*: el destino ya tiene cargas de *{grano_actual}*, "
-                f"pero el lote *{lote['nombre']}* es de *{lote_grano}*.\n\n¿Qué grano corresponde a esta descarga?",
-                parse_mode="Markdown", reply_markup=teclado
-            )
-            return DESC_CONF_GRANO
-
-        if lote_grano:
-            context.user_data["desc_grano"] = lote_grano
-        # Si lote no tiene grano, conservamos el grano_actual ya en user_data
-        await _guardar_sesion(context, str(query.message.chat_id))
-        return await _mostrar_confirmacion(query.edit_message_text, context)
-
-    # ── Flujo inicial (sin destino definido aún) ────────────────────────
-    camion_id    = context.user_data.get("desc_destino_id") if context.user_data.get("desc_tipo") == "camion" else None
-    camion_grano = get_grano_camion(camion_id) if camion_id else None
-
-    if camion_grano and lote_grano and lote_grano != camion_grano:
-        context.user_data["desc_grano_lote"]  = lote_grano
-        context.user_data["desc_grano_camion"] = camion_grano
-        iconos = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{iconos.get(lote_grano,'🌾')} {lote_grano} (grano del lote)",    callback_data="conf_grano_lote")],
-            [InlineKeyboardButton(f"{iconos.get(camion_grano,'🌾')} {camion_grano} (grano del camión)", callback_data="conf_grano_camion")],
-            [btn_cancelar()],
-        ])
-        await query.edit_message_text(
-            f"⚠️ *Atención*: el camión ya tiene cargas de *{camion_grano}*, "
-            f"pero el lote *{lote['nombre']}* es de *{lote_grano}*.\n\n¿Qué grano corresponde a esta descarga?",
-            parse_mode="Markdown", reply_markup=teclado
-        )
-        return DESC_CONF_GRANO
-
-    if camion_grano and not lote_grano:
-        context.user_data["desc_grano"] = camion_grano
-        await _guardar_sesion(context, str(query.message.chat_id))
-        return await mostrar_tipo_destino(query, context)
-
-    if not lote_grano:
+    if not lote.get("grano"):
         return await mostrar_granos(query)
 
-    context.user_data["desc_grano"] = lote_grano
+    context.user_data["desc_grano"] = lote["grano"]
     await _guardar_sesion(context, str(query.message.chat_id))
+    if context.user_data.get("desc_destino_id"):
+        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1158,16 +1098,6 @@ async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_T
     lote_id  = nuevo.data[0]["id"]
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = texto
-
-    # Si el camión ya tiene descargas con un grano, usarlo directamente
-    camion_id    = context.user_data.get("desc_destino_id") if context.user_data.get("desc_tipo") == "camion" else None
-    camion_grano = get_grano_camion(camion_id) if camion_id else None
-    if camion_grano:
-        context.user_data["desc_grano"] = camion_grano
-        supabase.table("lotes").update({"grano": camion_grano}).eq("id", lote_id).execute()
-        await _guardar_sesion(context, str(update.effective_chat.id))
-        return await _mostrar_confirmacion(update.message.reply_text, context)
-
     iconos  = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
     botones = []
     for g in GRANOS:
@@ -1207,20 +1137,6 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
-async def desc_confirmar_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para la advertencia de grano distinto en el camión."""
-    query = update.callback_query
-    await query.answer()
-    if query.data == "conf_grano_lote":
-        grano = context.user_data.pop("desc_grano_lote", "")
-    else:
-        grano = context.user_data.pop("desc_grano_camion", "")
-    context.user_data.pop("desc_grano_camion" if query.data == "conf_grano_lote" else "desc_grano_lote", None)
-    context.user_data["desc_grano"] = grano
-    await _guardar_sesion(context, str(query.message.chat_id))
-    if context.user_data.get("desc_destino_id"):
-        return await _mostrar_confirmacion(query.edit_message_text, context)
-    return await mostrar_tipo_destino(query, context)
 
 async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grano = update.message.text.strip()
@@ -1897,7 +1813,6 @@ if __name__ == "__main__":
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
             DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
-            DESC_CONF_GRANO:    [CallbackQueryHandler(desc_confirmar_grano, pattern="^conf_grano_")],
             DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
                                  CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
@@ -1928,7 +1843,6 @@ if __name__ == "__main__":
                                  CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
             DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
                                  CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
-            DESC_CONF_GRANO:    [CallbackQueryHandler(desc_confirmar_grano, pattern="^conf_grano_")],
             DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
                                  CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
