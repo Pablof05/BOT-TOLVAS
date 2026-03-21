@@ -7,6 +7,45 @@ function Badge({ cerrado }) {
     : <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 font-medium">Activo</span>
 }
 
+function BarraCamion({ camion }) {
+  const { patente_chasis, patente_acoplado, capacidad_kg, acumulado } = camion
+  const pct    = capacidad_kg ? Math.min((acumulado / capacidad_kg) * 100, 100) : null
+  const faltan = capacidad_kg ? Math.max(capacidad_kg - acumulado, 0) : null
+  const color  = pct == null ? 'bg-blue-400'
+    : pct >= 95 ? 'bg-red-500'
+    : pct >= 75 ? 'bg-amber-400'
+    : 'bg-green-500'
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-mono font-semibold text-gray-800">
+          {patente_chasis}{patente_acoplado ? ` / ${patente_acoplado}` : ''}
+        </span>
+        <span className="text-gray-500 text-xs">
+          {acumulado.toLocaleString('es-AR')} kg
+          {capacidad_kg ? ` / ${capacidad_kg.toLocaleString('es-AR')} kg` : ''}
+        </span>
+      </div>
+      {pct != null ? (
+        <>
+          <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+            <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+          </div>
+          <div className="flex justify-between text-xs text-gray-400">
+            <span>{pct.toFixed(0)}% cargado</span>
+            <span>faltan {faltan.toLocaleString('es-AR')} kg</span>
+          </div>
+        </>
+      ) : (
+        <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+          <div className="h-full rounded-full bg-blue-400" style={{ width: '100%', opacity: 0.3 }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default async function CamionesContent({ basePath, searchParams, fixedClienteId = null, allowedClienteIds = null }) {
   const supabase    = createAdminClient()
   const soloActivos = searchParams?.filtro !== 'todos'
@@ -16,6 +55,25 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
   const grano       = searchParams?.grano   || ''
   const desde       = searchParams?.desde   || ''
   const hasta       = searchParams?.hasta   || ''
+
+  // Camiones activos — sin filtros, para las barras de carga
+  const { data: activosRaw } = await supabase
+    .from('camiones')
+    .select('id, patente_chasis, patente_acoplado, capacidad_kg')
+    .eq('cerrado', false)
+    .order('patente_chasis')
+  const activosIds = (activosRaw ?? []).map(c => c.id)
+  const { data: descActivos } = activosIds.length
+    ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', activosIds)
+    : { data: [] }
+  const acumActivos = {}
+  for (const d of descActivos ?? []) {
+    acumActivos[d.camion_id] = (acumActivos[d.camion_id] ?? 0) + (d.kg || 0)
+  }
+  const camionesActivosData = (activosRaw ?? []).map(c => ({
+    ...c,
+    acumulado: acumActivos[c.id] ?? 0,
+  }))
 
   let camionesQuery = supabase
     .from('camiones')
@@ -86,6 +144,17 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
 
   return (
     <div>
+      {camionesActivosData.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-700 mb-3">Carga actual — camiones activos</h2>
+          <div className="bg-white rounded-2xl shadow p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+            {camionesActivosData.map(c => (
+              <BarraCamion key={c.id} camion={c} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">Camiones</h1>
         <div className="flex gap-2">
