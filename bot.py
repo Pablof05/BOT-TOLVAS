@@ -29,7 +29,8 @@ ARG = timezone(timedelta(hours=-3))
     DESC_CAMION_CHASIS, DESC_CAMION_ACOPLADO, DESC_CAMION_CAPACIDAD,
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
-) = range(21)
+    CAM_CORREGIR_CAPACIDAD,
+) = range(22)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
@@ -143,7 +144,7 @@ def parsear_kg(texto: str):
     val = m.group(1).replace('.','').replace(',','.')
     kg  = float(val)
     if re.search(r'TON', t): kg *= 1000
-    return kg if kg > 0 else None
+    return kg if kg >= 0 else None
 
 def parsear_patente(texto: str):
     t = texto.upper().strip()
@@ -1375,7 +1376,7 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
 
 async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg = parsear_kg(update.message.text)
-    if not kg:
+    if kg is None:
         await update.message.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
         return DESC_KG
 
@@ -1592,6 +1593,9 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         lineas    = [f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*"]
         lineas.append(f"Acumulado: *{acumulado:,.0f} kg*" + (f" / {capacidad:,.0f} kg" if capacidad else ""))
         if capacidad: lineas.append(barra(acumulado, capacidad))
+        if capacidad and not cerrado:
+            faltan = max(capacidad - acumulado, 0)
+            lineas.append(f"Faltan: *{faltan:,.0f} kg*")
         if cerrado: lineas.append("Estado: 🔒 Cerrado")
         botones = []
         if cerrado:
@@ -1599,6 +1603,7 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
             botones.append([InlineKeyboardButton("🔓 Reabrir",                callback_data=f"cam_reabrir_{camion_id}")])
         else:
             botones.append([InlineKeyboardButton("📦 Agregar descarga",       callback_data=f"cam_forzar_desc_{camion_id}")])
+            botones.append([InlineKeyboardButton("✏️ Corregir capacidad",     callback_data=f"cam_corregir_cap_{camion_id}")])
             botones.append([InlineKeyboardButton("🔒 Cerrar camión",          callback_data=f"cam_cerrar_{camion_id}")])
         botones.append([btn_cancelar("op_camiones")])
         await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
@@ -1678,6 +1683,12 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(f"🌾 Silobolsa #{numero}\n\n¿Cuántos kg?")
         return DESC_KG
 
+    if accion.startswith("cam_corregir_cap_"):
+        camion_id = int(accion.replace("cam_corregir_cap_", ""))
+        context.user_data["cam_corregir_id"] = camion_id
+        await query.edit_message_text("¿Cuál es la capacidad correcta en kg? (ej: 30000)")
+        return CAM_CORREGIR_CAPACIDAD
+
     if accion == "desc_continuar":
         contratista_id = get_contratista_id_de_usuario(uid)
         sesion = get_sesion_por_contratista(contratista_id)
@@ -1702,6 +1713,21 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
         return await mostrar_clientes(query, context, contratista_id, sesion)
 
+    return ConversationHandler.END
+
+async def cam_recibir_nueva_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text.strip().replace('.','').replace(',','.')
+    try:
+        cap = float(texto)
+    except ValueError:
+        await update.message.reply_text("No entendí. Escribí la capacidad en kg, ej: `30000`", parse_mode="Markdown")
+        return CAM_CORREGIR_CAPACIDAD
+    if cap <= 0:
+        await update.message.reply_text("La capacidad debe ser mayor a 0. Ej: `30000`", parse_mode="Markdown")
+        return CAM_CORREGIR_CAPACIDAD
+    camion_id = context.user_data.get("cam_corregir_id")
+    supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
+    await update.message.reply_text(f"✅ Capacidad actualizada a *{cap:,.0f} kg*.", parse_mode="Markdown", reply_markup=teclado_menu_operario())
     return ConversationHandler.END
 
 # ── Handler mensajes libres ──────────────────────────────────
@@ -1796,10 +1822,11 @@ if __name__ == "__main__":
     )
 
     operario_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|desc_continuar$|desc_cambiar$)")],
+        entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_|desc_continuar$|desc_cambiar$)")],
         states={
             DESC_KG: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
                       CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$|^cam_cerrar_")],
+            CAM_CORREGIR_CAPACIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, cam_recibir_nueva_capacidad)],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
         per_message=False
