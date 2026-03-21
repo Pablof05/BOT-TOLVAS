@@ -1089,14 +1089,43 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = lote["nombre"]
 
-    lote_grano   = lote.get("grano") or None
+    lote_grano = lote.get("grano") or None
+
+    if context.user_data.get("desc_destino_id"):
+        # ── Flujo de cambio desde confirmación ─────────────────────────
+        # Usamos el grano que ya está en user_data (sin query adicional)
+        grano_actual = context.user_data.get("desc_grano") or None
+        iconos = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
+
+        if grano_actual and lote_grano and lote_grano != grano_actual:
+            # Granos distintos → advertir
+            context.user_data["desc_grano_lote"]  = lote_grano
+            context.user_data["desc_grano_camion"] = grano_actual
+            teclado = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{iconos.get(lote_grano,'🌾')} {lote_grano} (grano del lote)",       callback_data="conf_grano_lote")],
+                [InlineKeyboardButton(f"{iconos.get(grano_actual,'🌾')} {grano_actual} (grano del destino)", callback_data="conf_grano_camion")],
+                [btn_cancelar()],
+            ])
+            await query.edit_message_text(
+                f"⚠️ *Atención*: el destino ya tiene cargas de *{grano_actual}*, "
+                f"pero el lote *{lote['nombre']}* es de *{lote_grano}*.\n\n¿Qué grano corresponde a esta descarga?",
+                parse_mode="Markdown", reply_markup=teclado
+            )
+            return DESC_CONF_GRANO
+
+        if lote_grano:
+            context.user_data["desc_grano"] = lote_grano
+        # Si lote no tiene grano, conservamos el grano_actual ya en user_data
+        await _guardar_sesion(context, str(query.message.chat_id))
+        return await _mostrar_confirmacion(query.edit_message_text, context)
+
+    # ── Flujo inicial (sin destino definido aún) ────────────────────────
     camion_id    = context.user_data.get("desc_destino_id") if context.user_data.get("desc_tipo") == "camion" else None
     camion_grano = get_grano_camion(camion_id) if camion_id else None
 
-    # Si el camión tiene un grano y el lote tiene uno distinto → advertir
     if camion_grano and lote_grano and lote_grano != camion_grano:
-        context.user_data["desc_grano_lote"]   = lote_grano
-        context.user_data["desc_grano_camion"]  = camion_grano
+        context.user_data["desc_grano_lote"]  = lote_grano
+        context.user_data["desc_grano_camion"] = camion_grano
         iconos = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
         teclado = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{iconos.get(lote_grano,'🌾')} {lote_grano} (grano del lote)",    callback_data="conf_grano_lote")],
@@ -1110,22 +1139,16 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return DESC_CONF_GRANO
 
-    # Si el camión tiene grano y el lote no tiene asignado → usar el del camión
     if camion_grano and not lote_grano:
         context.user_data["desc_grano"] = camion_grano
         await _guardar_sesion(context, str(query.message.chat_id))
-        if context.user_data.get("desc_destino_id"):
-            return await _mostrar_confirmacion(query.edit_message_text, context)
         return await mostrar_tipo_destino(query, context)
 
-    # Lote sin grano y sin referencia del camión → preguntar
     if not lote_grano:
         return await mostrar_granos(query)
 
     context.user_data["desc_grano"] = lote_grano
     await _guardar_sesion(context, str(query.message.chat_id))
-    if context.user_data.get("desc_destino_id"):
-        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
