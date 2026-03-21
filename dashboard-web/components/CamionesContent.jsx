@@ -130,7 +130,7 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
 
     return (
       <div>
-        <AutoRefresh intervalMs={15000} />
+        <AutoRefresh />
         {header}
         {camionesActivosData.length === 0 ? (
           <p className="text-sm text-gray-400 mt-4">No hay camiones activos.</p>

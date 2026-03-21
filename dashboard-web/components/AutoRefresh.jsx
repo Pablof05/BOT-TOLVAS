@@ -2,12 +2,21 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { createClient } from '../lib/supabase'
 
-export default function AutoRefresh({ intervalMs = 15000 }) {
+export default function AutoRefresh() {
   const router = useRouter()
+
   useEffect(() => {
-    const id = setInterval(() => router.refresh(), intervalMs)
-    return () => clearInterval(id)
-  }, [router, intervalMs])
+    const supabase = createClient()
+    const channel = supabase
+      .channel('activos-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'descargas' }, () => router.refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'camiones' }, () => router.refresh())
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [router])
+
   return null
 }
