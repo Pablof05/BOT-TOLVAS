@@ -30,7 +30,8 @@ ARG = timezone(timedelta(hours=-3))
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
     CAM_CORREGIR_CAPACIDAD,
-) = range(22)
+    DESC_CONF_GRANO,
+) = range(23)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
@@ -118,6 +119,13 @@ def get_silobolsas_abiertos(contratista_id: int):
 def kg_acumulado_camion(camion_id: int):
     r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
+
+def get_grano_camion(camion_id: int):
+    """Retorna el grano de la descarga más reciente del camión, o None si no tiene."""
+    r = supabase.table("descargas").select("lotes(grano)").eq("camion_id", camion_id).order("created_at", desc=True).limit(1).execute()
+    if r.data:
+        return (r.data[0].get("lotes") or {}).get("grano") or None
+    return None
 
 def kg_acumulado_silo(silo_id: int):
     r = supabase.table("descargas").select("kg").eq("silobolsa_id", silo_id).execute()
@@ -1081,10 +1089,38 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = lote["nombre"]
 
-    if not lote.get("grano"):
+    lote_grano   = lote.get("grano") or None
+    camion_id    = context.user_data.get("desc_destino_id") if context.user_data.get("desc_tipo") == "camion" else None
+    camion_grano = get_grano_camion(camion_id) if camion_id else None
+
+    # Si el camión tiene un grano y el lote tiene uno distinto → advertir
+    if camion_grano and lote_grano and lote_grano != camion_grano:
+        context.user_data["desc_grano_lote"]   = lote_grano
+        context.user_data["desc_grano_camion"]  = camion_grano
+        iconos = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{iconos.get(lote_grano,'🌾')} {lote_grano} (grano del lote)",    callback_data="conf_grano_lote")],
+            [InlineKeyboardButton(f"{iconos.get(camion_grano,'🌾')} {camion_grano} (grano del camión)", callback_data="conf_grano_camion")],
+            [btn_cancelar()],
+        ])
+        await query.edit_message_text(
+            f"⚠️ *Atención*: el camión ya tiene cargas de *{camion_grano}*, "
+            f"pero el lote *{lote['nombre']}* es de *{lote_grano}*.\n\n¿Qué grano corresponde a esta descarga?",
+            parse_mode="Markdown", reply_markup=teclado
+        )
+        return DESC_CONF_GRANO
+
+    # Si el camión tiene grano y el lote no tiene asignado → usar el del camión
+    if camion_grano and not lote_grano:
+        context.user_data["desc_grano"] = camion_grano
+        await _guardar_sesion(context, str(query.message.chat_id))
+        return await mostrar_tipo_destino(query, context)
+
+    # Lote sin grano y sin referencia del camión → preguntar
+    if not lote_grano:
         return await mostrar_granos(query)
 
-    context.user_data["desc_grano"] = lote["grano"]
+    context.user_data["desc_grano"] = lote_grano
     await _guardar_sesion(context, str(query.message.chat_id))
     return await mostrar_tipo_destino(query, context)
 
@@ -1129,6 +1165,19 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grano = data.replace("desc_grano_", "")
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
+    await _guardar_sesion(context, str(query.message.chat_id))
+    return await mostrar_tipo_destino(query, context)
+
+async def desc_confirmar_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para la advertencia de grano distinto en el camión."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == "conf_grano_lote":
+        grano = context.user_data.pop("desc_grano_lote", "")
+    else:
+        grano = context.user_data.pop("desc_grano_camion", "")
+    context.user_data.pop("desc_grano_camion" if query.data == "conf_grano_lote" else "desc_grano_lote", None)
+    context.user_data["desc_grano"] = grano
     await _guardar_sesion(context, str(query.message.chat_id))
     return await mostrar_tipo_destino(query, context)
 
@@ -1802,6 +1851,7 @@ if __name__ == "__main__":
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
             DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
+            DESC_CONF_GRANO:    [CallbackQueryHandler(desc_confirmar_grano, pattern="^conf_grano_")],
             DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
                                  CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
@@ -1824,6 +1874,24 @@ if __name__ == "__main__":
     operario_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_|desc_continuar$|desc_cambiar$)")],
         states={
+            DESC_CAMPO:         [CallbackQueryHandler(desc_elegir_campo,    pattern="^desc_campo_|^desc_nuevo_campo$")],
+            NUEVO_CAMPO_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_campo_nombre)],
+            DESC_LOTE:          [CallbackQueryHandler(desc_elegir_lote,     pattern="^desc_lote_|^desc_nuevo_lote$"),
+                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
+            NUEVO_LOTE_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_lote_nombre),
+                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
+            DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
+                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
+            DESC_CONF_GRANO:    [CallbackQueryHandler(desc_confirmar_grano, pattern="^conf_grano_")],
+            DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
+                                 CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
+            DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
+            DESC_CAMION_ACOPLADO: [CallbackQueryHandler(desc_camion_acoplado, pattern="^desc_acoplado_"),
+                                   MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_acoplado)],
+            DESC_CAMION_CAPACIDAD:[
+                MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_capacidad),
+                CallbackQueryHandler(desc_confirmar_capacidad, pattern="^cap_"),
+            ],
             DESC_KG: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
                       CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$|^cam_cerrar_")],
             CAM_CORREGIR_CAPACIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, cam_recibir_nueva_capacidad)],
