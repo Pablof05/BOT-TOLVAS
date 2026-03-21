@@ -5,13 +5,11 @@ export default async function DashboardPage() {
   const supabase = createAdminClient()
 
   const [
-    { data: camionesAbiertos },
     { data: camionesCerrados },
     { data: operarios },
     { data: clientes },
     { data: descargas, error },
   ] = await Promise.all([
-    supabase.from('camiones').select('id, patente_chasis, patente_acoplado, capacidad_kg').eq('cerrado', false),
     supabase.from('camiones').select('id').eq('cerrado', true),
     supabase.from('usuarios').select('id').eq('rol', 'operario'),
     supabase.from('clientes').select('id'),
@@ -27,6 +25,12 @@ export default async function DashboardPage() {
     )
   }
 
+  const { data: camionesAbiertos } = await supabase
+    .from('camiones')
+    .select('id, patente_chasis, patente_acoplado, capacidad_kg')
+    .eq('cerrado', false)
+    .order('patente_chasis')
+
   const ids = (camionesAbiertos ?? []).map(c => c.id)
   const { data: descargasCamiones } = ids.length
     ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', ids)
@@ -38,8 +42,11 @@ export default async function DashboardPage() {
   }
 
   const camionesActivosData = (camionesAbiertos ?? []).map(c => ({
-    ...c,
-    acumulado: acumuladoPorCamion[c.id] ?? 0,
+    id:              c.id,
+    patente_chasis:  c.patente_chasis,
+    patente_acoplado: c.patente_acoplado,
+    capacidad_kg:    c.capacidad_kg,
+    acumulado:       acumuladoPorCamion[c.id] ?? 0,
   }))
 
   return (

@@ -77,16 +77,18 @@ export default function DashboardContratista({
         <StatCard label="Operarios"  value={operarios}  icon="👷" />
       </div>
 
-      {camionesActivosData.length > 0 && (
-        <div className="mt-8">
-          <h2 className="text-lg font-semibold text-gray-700 mb-4">Carga de camiones activos</h2>
+      <div className="mt-8">
+        <h2 className="text-lg font-semibold text-gray-700 mb-4">Carga de camiones activos</h2>
+        {camionesActivosData.length === 0 ? (
+          <p className="text-sm text-gray-400">No hay camiones activos.</p>
+        ) : (
           <div className="bg-white rounded-2xl shadow p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
             {camionesActivosData.map(c => (
               <BarraCamion key={c.id} camion={c} />
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
