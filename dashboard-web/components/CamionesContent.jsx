@@ -8,7 +8,7 @@ function Badge({ cerrado }) {
 }
 
 function BarraCamion({ camion }) {
-  const { patente_chasis, patente_acoplado, capacidad_kg, acumulado } = camion
+  const { patente_chasis, patente_acoplado, capacidad_kg, acumulado, lotes = [] } = camion
   const pct    = capacidad_kg ? Math.min((acumulado / capacidad_kg) * 100, 100) : null
   const faltan = capacidad_kg ? Math.max(capacidad_kg - acumulado, 0) : null
   const color  = pct == null ? 'bg-blue-400'
@@ -40,6 +40,18 @@ function BarraCamion({ camion }) {
       ) : (
         <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full bg-blue-400" style={{ width: '100%', opacity: 0.3 }} />
+        </div>
+      )}
+      {lotes.length > 0 && (
+        <div className="mt-1 space-y-0.5">
+          {lotes.map(l => (
+            <div key={l.id} className="text-xs text-gray-500">
+              <span className="font-medium">{l.campos?.clientes?.nombre} {l.campos?.clientes?.apellido}</span>
+              {' · '}<span>{l.campos?.nombre}</span>
+              {' · '}<span>{l.nombre}</span>
+              {l.grano && <span className="text-gray-400 capitalize"> ({l.grano})</span>}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -94,15 +106,25 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
       .order('patente_chasis')
     const activosIds = (activosRaw ?? []).map(c => c.id)
     const { data: descActivos } = activosIds.length
-      ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', activosIds)
+      ? await supabase
+          .from('descargas')
+          .select('camion_id, kg, lote_id, lotes(id, nombre, grano, campos(id, nombre, clientes(id, nombre, apellido)))')
+          .in('camion_id', activosIds)
       : { data: [] }
     const acumActivos = {}
+    const lotesActivos = {}
     for (const d of descActivos ?? []) {
-      acumActivos[d.camion_id] = (acumActivos[d.camion_id] ?? 0) + (d.kg || 0)
+      const cid = d.camion_id
+      acumActivos[cid] = (acumActivos[cid] ?? 0) + (d.kg || 0)
+      if (d.lotes && d.lote_id) {
+        if (!lotesActivos[cid]) lotesActivos[cid] = new Map()
+        lotesActivos[cid].set(d.lote_id, d.lotes)
+      }
     }
     const camionesActivosData = (activosRaw ?? []).map(c => ({
       ...c,
       acumulado: acumActivos[c.id] ?? 0,
+      lotes: lotesActivos[c.id] ? [...lotesActivos[c.id].values()] : [],
     }))
 
     return (
