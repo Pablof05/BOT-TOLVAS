@@ -1,6 +1,7 @@
 import { createAdminClient } from '../../../lib/supabase-admin'
 import { notFound } from 'next/navigation'
 import PortalNav from '../../../components/PortalNav'
+import AutoRefresh from '../../../components/AutoRefresh'
 
 export default async function OperarioLayout({ children, params }) {
   const { codigo } = await params
@@ -22,6 +23,7 @@ export default async function OperarioLayout({ children, params }) {
         basePath={`/operario/${codigo}`}
       />
       <main className="flex-1 p-4 md:p-6 pt-16 md:pt-6 overflow-auto bg-gray-100">
+        <AutoRefresh />
         {children}
       </main>
     </div>
