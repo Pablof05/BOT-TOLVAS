@@ -133,7 +133,7 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
         {camionesActivosData.length === 0 ? (
           <p className="text-sm text-gray-400 mt-4">No hay camiones activos.</p>
         ) : (
-          <div className="bg-white rounded-2xl shadow p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white rounded-2xl shadow p-5 flex flex-col gap-6">
             {camionesActivosData.map(c => (
               <BarraCamion key={c.id} camion={c} />
             ))}
