@@ -23,7 +23,8 @@ export default function DescargasTable({
     router.push(basePath + '?' + p.toString())
   }
 
-  const totalKg = descargas.reduce((acc, d) => acc + (d.kg || 0), 0)
+  const sorted = [...descargas].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  const totalKg = sorted.reduce((acc, d) => acc + (d.kg || 0), 0)
 
   const camposFiltrados = isCliente
     ? campos
@@ -105,14 +106,14 @@ export default function DescargasTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {descargas.length === 0 ? (
+            {sorted.length === 0 ? (
               <tr>
                 <td colSpan={isCliente ? 8 : 9} className="text-center py-10 text-gray-400">
                   No hay descargas con los filtros seleccionados
                 </td>
               </tr>
             ) : (
-              descargas.map(d => (
+              sorted.map(d => (
                 <tr key={d.id} className="hover:bg-gray-50">
                   <td className="px-4 py-2 text-gray-500 whitespace-nowrap">{fmt(d.created_at)}</td>
                   {!isCliente && (
