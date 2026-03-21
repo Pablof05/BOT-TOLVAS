@@ -56,32 +56,77 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
   const desde       = searchParams?.desde   || ''
   const hasta       = searchParams?.hasta   || ''
 
-  // Camiones activos — sin filtros, para las barras de carga
-  const { data: activosRaw } = await supabase
-    .from('camiones')
-    .select('id, patente_chasis, patente_acoplado, capacidad_kg')
-    .eq('cerrado', false)
-    .order('patente_chasis')
-  const activosIds = (activosRaw ?? []).map(c => c.id)
-  const { data: descActivos } = activosIds.length
-    ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', activosIds)
-    : { data: [] }
-  const acumActivos = {}
-  for (const d of descActivos ?? []) {
-    acumActivos[d.camion_id] = (acumActivos[d.camion_id] ?? 0) + (d.kg || 0)
+  const filtroHref = (extra) => {
+    const p = new URLSearchParams()
+    if (clienteId) p.set('cliente', clienteId)
+    if (campoId)   p.set('campo', campoId)
+    if (loteId)    p.set('lote', loteId)
+    if (grano)     p.set('grano', grano)
+    if (desde)     p.set('desde', desde)
+    if (hasta)     p.set('hasta', hasta)
+    Object.entries(extra).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k))
+    const s = p.toString()
+    return basePath + (s ? '?' + s : '')
   }
-  const camionesActivosData = (activosRaw ?? []).map(c => ({
-    ...c,
-    acumulado: acumActivos[c.id] ?? 0,
-  }))
 
-  let camionesQuery = supabase
+  const header = (
+    <div className="flex items-center justify-between mb-4">
+      <h1 className="text-2xl font-bold text-gray-800">Camiones</h1>
+      <div className="flex gap-2">
+        <a href={filtroHref({ filtro: '' })}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${soloActivos ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
+          Activos
+        </a>
+        <a href={filtroHref({ filtro: 'todos' })}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${!soloActivos ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
+          Todos
+        </a>
+      </div>
+    </div>
+  )
+
+  // ── Vista "Activos": barras de carga, sin filtros ─────────────────────────
+  if (soloActivos) {
+    const { data: activosRaw } = await supabase
+      .from('camiones')
+      .select('id, patente_chasis, patente_acoplado, capacidad_kg')
+      .eq('cerrado', false)
+      .order('patente_chasis')
+    const activosIds = (activosRaw ?? []).map(c => c.id)
+    const { data: descActivos } = activosIds.length
+      ? await supabase.from('descargas').select('camion_id, kg').in('camion_id', activosIds)
+      : { data: [] }
+    const acumActivos = {}
+    for (const d of descActivos ?? []) {
+      acumActivos[d.camion_id] = (acumActivos[d.camion_id] ?? 0) + (d.kg || 0)
+    }
+    const camionesActivosData = (activosRaw ?? []).map(c => ({
+      ...c,
+      acumulado: acumActivos[c.id] ?? 0,
+    }))
+
+    return (
+      <div>
+        {header}
+        {camionesActivosData.length === 0 ? (
+          <p className="text-sm text-gray-400 mt-4">No hay camiones activos.</p>
+        ) : (
+          <div className="bg-white rounded-2xl shadow p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+            {camionesActivosData.map(c => (
+              <BarraCamion key={c.id} camion={c} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── Vista "Todos": tabla con filtros ──────────────────────────────────────
+  const { data: camiones } = await supabase
     .from('camiones')
     .select('id, patente_chasis, patente_acoplado, capacidad_kg, cerrado')
     .order('cerrado')
     .order('patente_chasis')
-  if (soloActivos) camionesQuery = camionesQuery.eq('cerrado', false)
-  const { data: camiones } = await camionesQuery
 
   const ids = camiones?.map(c => c.id) ?? []
   let descQuery = ids.length
@@ -129,45 +174,9 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
     return true
   })
 
-  const filtroHref = (extra) => {
-    const p = new URLSearchParams()
-    if (clienteId) p.set('cliente', clienteId)
-    if (campoId)   p.set('campo', campoId)
-    if (loteId)    p.set('lote', loteId)
-    if (grano)     p.set('grano', grano)
-    if (desde)     p.set('desde', desde)
-    if (hasta)     p.set('hasta', hasta)
-    Object.entries(extra).forEach(([k, v]) => v ? p.set(k, v) : p.delete(k))
-    const s = p.toString()
-    return basePath + (s ? '?' + s : '')
-  }
-
   return (
     <div>
-      {camionesActivosData.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold text-gray-700 mb-3">Carga actual — camiones activos</h2>
-          <div className="bg-white rounded-2xl shadow p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
-            {camionesActivosData.map(c => (
-              <BarraCamion key={c.id} camion={c} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-800">Camiones</h1>
-        <div className="flex gap-2">
-          <a href={filtroHref({ filtro: '' })}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${soloActivos ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
-            Activos
-          </a>
-          <a href={filtroHref({ filtro: 'todos' })}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${!soloActivos ? 'bg-green-600 text-white' : 'bg-white text-gray-600 border'}`}>
-            Todos
-          </a>
-        </div>
-      </div>
+      {header}
 
       <FiltroBar
         clientes={fixedClienteId ? [] : clientesList}
