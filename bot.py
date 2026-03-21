@@ -1131,6 +1131,16 @@ async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_T
     lote_id  = nuevo.data[0]["id"]
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = texto
+
+    # Si el camión ya tiene descargas con un grano, usarlo directamente
+    camion_id    = context.user_data.get("desc_destino_id") if context.user_data.get("desc_tipo") == "camion" else None
+    camion_grano = get_grano_camion(camion_id) if camion_id else None
+    if camion_grano:
+        context.user_data["desc_grano"] = camion_grano
+        supabase.table("lotes").update({"grano": camion_grano}).eq("id", lote_id).execute()
+        await _guardar_sesion(context, str(update.effective_chat.id))
+        return await _mostrar_confirmacion(update.message.reply_text, context)
+
     iconos  = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
     botones = []
     for g in GRANOS:
@@ -1166,6 +1176,8 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(query.message.chat_id))
+    if context.user_data.get("desc_destino_id"):
+        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_confirmar_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1179,6 +1191,8 @@ async def desc_confirmar_grano(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop("desc_grano_camion" if query.data == "conf_grano_lote" else "desc_grano_lote", None)
     context.user_data["desc_grano"] = grano
     await _guardar_sesion(context, str(query.message.chat_id))
+    if context.user_data.get("desc_destino_id"):
+        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1186,6 +1200,8 @@ async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(update.effective_chat.id))
+    if context.user_data.get("desc_destino_id"):
+        return await _mostrar_confirmacion(update.message.reply_text, context)
     botones = [
         [InlineKeyboardButton("🚛 Camión",    callback_data="desc_tipo_camion")],
         [InlineKeyboardButton("🌾 Silobolsa", callback_data="desc_tipo_silo")],
@@ -1423,15 +1439,10 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
     )
     return DESC_KG
 
-async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kg = parsear_kg(update.message.text)
-    if kg is None:
-        await update.message.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
-        return DESC_KG
-
-    context.user_data["desc_kg"] = kg
-    sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
-
+async def _mostrar_confirmacion(send_fn, context):
+    """Envía/edita la pantalla de confirmación de descarga. send_fn puede ser
+    message.reply_text o query.edit_message_text."""
+    sesion      = get_sesion_por_contratista(context.user_data["contratista_id"])
     cliente_str = context.user_data.get("desc_cliente_str") or ""
     campo_str   = context.user_data.get("desc_campo_str")   or ""
     lote_str    = context.user_data.get("desc_lote_str")    or ""
@@ -1439,14 +1450,13 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     destino_str = context.user_data.get("desc_destino_str") or ""
     tipo        = context.user_data.get("desc_tipo", "camion")
     icono       = "🚛" if tipo == "camion" else "🌾"
-
+    kg          = context.user_data.get("desc_kg", 0)
     if not cliente_str and sesion:
         c = sesion.get("clientes") or {}
         cliente_str = f"{c.get('nombre','')} {c.get('apellido','')}".strip()
         campo_str   = (sesion.get("campos") or {}).get("nombre","")
         lote_str    = (sesion.get("lotes")  or {}).get("nombre","")
         grano       = (sesion.get("lotes")  or {}).get("grano","")
-
     texto = (
         f"📋 *Confirmar descarga*\n\n"
         f"Cliente: *{cliente_str}*\n"
@@ -1457,15 +1467,21 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirmar",       callback_data="desc_confirmar")],
-        [InlineKeyboardButton("👤 Cambiar cliente", callback_data="desc_cambiar_cliente"),
-         InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo")],
-        [InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote"),
-         InlineKeyboardButton("🚛 Cambiar destino", callback_data="desc_cambiar_destino")],
+        [InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo"),
+         InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote")],
         [InlineKeyboardButton("⚖️ Cambiar kg",      callback_data="desc_cambiar_kg")],
         [btn_cancelar()]
     ])
-    await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado)
+    await send_fn(texto, parse_mode="Markdown", reply_markup=teclado)
     return DESC_KG
+
+async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kg = parsear_kg(update.message.text)
+    if kg is None:
+        await update.message.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
+        return DESC_KG
+    context.user_data["desc_kg"] = kg
+    return await _mostrar_confirmacion(update.message.reply_text, context)
 
 async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
@@ -1478,20 +1494,11 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("¿Cuántos kg?")
         return DESC_KG
 
-    if data == "desc_cambiar_cliente":
-        sesion = get_sesion_por_contratista(context.user_data["contratista_id"])
-        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
-        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
-        return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
-
     if data == "desc_cambiar_campo":
         return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
 
     if data == "desc_cambiar_lote":
         return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
-
-    if data == "desc_cambiar_destino":
-        return await mostrar_tipo_destino(query, context)
 
     if data != "desc_confirmar":
         return DESC_KG
