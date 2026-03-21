@@ -1,5 +1,6 @@
 import { createAdminClient } from '../lib/supabase-admin'
 import FiltroBar from './FiltroBar'
+import AutoRefresh from './AutoRefresh'
 
 function Badge({ cerrado }) {
   return cerrado
@@ -129,6 +130,7 @@ export default async function CamionesContent({ basePath, searchParams, fixedCli
 
     return (
       <div>
+        <AutoRefresh intervalMs={15000} />
         {header}
         {camionesActivosData.length === 0 ? (
           <p className="text-sm text-gray-400 mt-4">No hay camiones activos.</p>
