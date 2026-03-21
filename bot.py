@@ -119,7 +119,6 @@ def kg_acumulado_camion(camion_id: int):
     r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
 
-
 def kg_acumulado_silo(silo_id: int):
     r = supabase.table("descargas").select("kg").eq("silobolsa_id", silo_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
@@ -1087,8 +1086,6 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["desc_grano"] = lote["grano"]
     await _guardar_sesion(context, str(query.message.chat_id))
-    if context.user_data.get("desc_destino_id"):
-        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1133,18 +1130,13 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(query.message.chat_id))
-    if context.user_data.get("desc_destino_id"):
-        return await _mostrar_confirmacion(query.edit_message_text, context)
     return await mostrar_tipo_destino(query, context)
-
 
 async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grano = update.message.text.strip()
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(update.effective_chat.id))
-    if context.user_data.get("desc_destino_id"):
-        return await _mostrar_confirmacion(update.message.reply_text, context)
     botones = [
         [InlineKeyboardButton("🚛 Camión",    callback_data="desc_tipo_camion")],
         [InlineKeyboardButton("🌾 Silobolsa", callback_data="desc_tipo_silo")],
@@ -1154,19 +1146,13 @@ async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DESC_TIPO_DESTINO
 
 async def _guardar_sesion(context, chat_id=None):
-    contratista_id = context.user_data.get("contratista_id")
-    if not contratista_id:
-        return
-    try:
-        supabase.table("sesion_activa").upsert({
-            "contratista_id": contratista_id,
-            "cliente_id":     context.user_data.get("desc_cliente_id"),
-            "campo_id":       context.user_data.get("desc_campo_id"),
-            "lote_id":        context.user_data.get("desc_lote_id"),
-            "iniciada_at":    ahora().isoformat()
-        }, on_conflict="contratista_id").execute()
-    except Exception:
-        pass  # fallo silencioso no debe bloquear el flujo
+    supabase.table("sesion_activa").upsert({
+        "contratista_id": context.user_data["contratista_id"],
+        "cliente_id":     context.user_data["desc_cliente_id"],
+        "campo_id":       context.user_data["desc_campo_id"],
+        "lote_id":        context.user_data["desc_lote_id"],
+        "iniciada_at":    ahora().isoformat()
+    }).execute()
 
 async def mostrar_tipo_destino(query, context):
     botones = [
@@ -1388,10 +1374,15 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
     )
     return DESC_KG
 
-async def _mostrar_confirmacion(send_fn, context):
-    """Envía/edita la pantalla de confirmación de descarga. send_fn puede ser
-    message.reply_text o query.edit_message_text."""
-    sesion      = get_sesion_por_contratista(context.user_data.get("contratista_id"))
+async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kg = parsear_kg(update.message.text)
+    if kg is None:
+        await update.message.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
+        return DESC_KG
+
+    context.user_data["desc_kg"] = kg
+    sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
+
     cliente_str = context.user_data.get("desc_cliente_str") or ""
     campo_str   = context.user_data.get("desc_campo_str")   or ""
     lote_str    = context.user_data.get("desc_lote_str")    or ""
@@ -1399,13 +1390,14 @@ async def _mostrar_confirmacion(send_fn, context):
     destino_str = context.user_data.get("desc_destino_str") or ""
     tipo        = context.user_data.get("desc_tipo", "camion")
     icono       = "🚛" if tipo == "camion" else "🌾"
-    kg          = context.user_data.get("desc_kg", 0)
+
     if not cliente_str and sesion:
         c = sesion.get("clientes") or {}
         cliente_str = f"{c.get('nombre','')} {c.get('apellido','')}".strip()
         campo_str   = (sesion.get("campos") or {}).get("nombre","")
         lote_str    = (sesion.get("lotes")  or {}).get("nombre","")
         grano       = (sesion.get("lotes")  or {}).get("grano","")
+
     texto = (
         f"📋 *Confirmar descarga*\n\n"
         f"Cliente: *{cliente_str}*\n"
@@ -1416,21 +1408,15 @@ async def _mostrar_confirmacion(send_fn, context):
     )
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirmar",       callback_data="desc_confirmar")],
-        [InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo"),
-         InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote")],
+        [InlineKeyboardButton("👤 Cambiar cliente", callback_data="desc_cambiar_cliente"),
+         InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo")],
+        [InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote"),
+         InlineKeyboardButton("🚛 Cambiar destino", callback_data="desc_cambiar_destino")],
         [InlineKeyboardButton("⚖️ Cambiar kg",      callback_data="desc_cambiar_kg")],
         [btn_cancelar()]
     ])
-    await send_fn(texto, parse_mode="Markdown", reply_markup=teclado)
+    await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado)
     return DESC_KG
-
-async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kg = parsear_kg(update.message.text)
-    if kg is None:
-        await update.message.reply_text("No entendí los kg. Escribí solo el número, ej: `13500`", parse_mode="Markdown")
-        return DESC_KG
-    context.user_data["desc_kg"] = kg
-    return await _mostrar_confirmacion(update.message.reply_text, context)
 
 async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
@@ -1443,17 +1429,20 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("¿Cuántos kg?")
         return DESC_KG
 
+    if data == "desc_cambiar_cliente":
+        sesion = get_sesion_por_contratista(context.user_data["contratista_id"])
+        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
+        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
+        return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
+
     if data == "desc_cambiar_campo":
-        cliente_id = context.user_data.get("desc_cliente_id")
-        if not cliente_id:
-            return await _mostrar_confirmacion(query.edit_message_text, context)
-        return await mostrar_campos(query, context, cliente_id)
+        return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
 
     if data == "desc_cambiar_lote":
-        campo_id = context.user_data.get("desc_campo_id")
-        if not campo_id:
-            return await _mostrar_confirmacion(query.edit_message_text, context)
-        return await mostrar_lotes(query, context, campo_id)
+        return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
+
+    if data == "desc_cambiar_destino":
+        return await mostrar_tipo_destino(query, context)
 
     if data != "desc_confirmar":
         return DESC_KG
@@ -1835,23 +1824,6 @@ if __name__ == "__main__":
     operario_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_|desc_continuar$|desc_cambiar$)")],
         states={
-            DESC_CAMPO:         [CallbackQueryHandler(desc_elegir_campo,    pattern="^desc_campo_|^desc_nuevo_campo$")],
-            NUEVO_CAMPO_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_campo_nombre)],
-            DESC_LOTE:          [CallbackQueryHandler(desc_elegir_lote,     pattern="^desc_lote_|^desc_nuevo_lote$"),
-                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
-            NUEVO_LOTE_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_lote_nombre),
-                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
-            DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
-                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
-            DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
-                                 CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
-            DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
-            DESC_CAMION_ACOPLADO: [CallbackQueryHandler(desc_camion_acoplado, pattern="^desc_acoplado_"),
-                                   MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_acoplado)],
-            DESC_CAMION_CAPACIDAD:[
-                MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_capacidad),
-                CallbackQueryHandler(desc_confirmar_capacidad, pattern="^cap_"),
-            ],
             DESC_KG: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
                       CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$|^cam_cerrar_")],
             CAM_CORREGIR_CAPACIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, cam_recibir_nueva_capacidad)],
