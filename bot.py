@@ -142,6 +142,19 @@ def get_silobolsas_por_ids(ids: set) -> list:
                        "lote_nombre": lote.get("nombre",""), "grano": lote.get("grano","")})
     return result
 
+def _upsert_camion(chasis: str, acoplado: str, cap: float, contratista_id: int) -> int:
+    """Crea o actualiza el camión (sin reabrir). Retorna el camion_id."""
+    r = supabase.table("camiones").select("id").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
+    if r.data:
+        camion_id = r.data[0]["id"]
+        supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
+    else:
+        camion_id = supabase.table("camiones").insert({
+            "patente_chasis": chasis, "patente_acoplado": acoplado,
+            "capacidad_kg": cap, "contratista_id": contratista_id
+        }).execute().data[0]["id"]
+    return camion_id
+
 def kg_acumulado_camion(camion_id: int):
     r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
@@ -922,22 +935,26 @@ async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["contratista_id"] = contratista_id
     return await mostrar_tipo_destino(query, context)
 
-async def mostrar_clientes(query, context, contratista_id, sesion=None):
+async def mostrar_clientes(send_fn, context, contratista_id):
+    sesion  = get_sesion_por_contratista(contratista_id)
+    context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
+    context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
+
     clientes = get_clientes(contratista_id)
     if not clientes:
-        await query.edit_message_text(
+        await send_fn(
             "No tenés clientes registrados. El contratista debe agregar clientes primero.",
             reply_markup=InlineKeyboardMarkup([[btn_cancelar()]]))
         return ConversationHandler.END
 
-    sesion_cli_id = (sesion or {}).get("cliente_id")
+    sesion_cli_id = sesion["cliente_id"] if sesion else None
     botones = []
     for c in clientes:
         marca = "✅ " if c["id"] == sesion_cli_id else ""
         botones.append([InlineKeyboardButton(f"{marca}{c['nombre']} {c['apellido']}", callback_data=f"desc_cli_{c['id']}")])
     botones.append([InlineKeyboardButton("➕ Nuevo cliente", callback_data="desc_nuevo_cliente")])
     botones.append([btn_cancelar()])
-    await query.edit_message_text("¿Para qué cliente es esta cosecha?", reply_markup=InlineKeyboardMarkup(botones))
+    await send_fn("¿Para qué cliente es esta cosecha?", reply_markup=InlineKeyboardMarkup(botones))
     return DESC_CLIENTE
 
 async def desc_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1063,7 +1080,7 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["desc_grano"] = lote["grano"]
     await _guardar_sesion(context, str(query.message.chat_id))
-    return await mostrar_tipo_destino(query, context)
+    return await _continuar_tras_grano(query.edit_message_text, context)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto    = update.message.text.strip()
@@ -1110,20 +1127,29 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(query.message.chat_id))
-    return await mostrar_tipo_destino(query, context)
+    return await _continuar_tras_grano(query.edit_message_text, context)
 
 async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grano = update.message.text.strip()
     context.user_data["desc_grano"] = grano
     supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
     await _guardar_sesion(context, str(update.effective_chat.id))
-    botones = [
-        [InlineKeyboardButton("🚛 Camión",    callback_data="desc_tipo_camion")],
-        [InlineKeyboardButton("🌾 Silobolsa", callback_data="desc_tipo_silo")],
-        [btn_cancelar()]
-    ]
-    await update.message.reply_text("¿A dónde va la descarga?", reply_markup=InlineKeyboardMarkup(botones))
-    return DESC_TIPO_DESTINO
+    return await _continuar_tras_grano(update.message.reply_text, context)
+
+async def _continuar_tras_grano(send_fn, context):
+    """Luego de que grano queda confirmado: crea silobolsa si es nuevo, pide kg."""
+    if context.user_data.pop("desc_crear_silo", False):
+        lote_id = context.user_data["desc_lote_id"]
+        r       = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
+        numero  = (r.data[0]["numero"] + 1) if r.data else 1
+        nuevo   = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
+        if not nuevo.data:
+            await send_fn("Error al crear el silobolsa. Intentá de nuevo.")
+            return ConversationHandler.END
+        context.user_data["desc_destino_id"]  = nuevo.data[0]["id"]
+        context.user_data["desc_destino_str"] = f"Silobolsa #{numero}"
+    await send_fn("¿Cuántos kg?")
+    return DESC_KG
 
 async def _guardar_sesion(context, chat_id=None):
     supabase.table("sesion_activa").upsert({
@@ -1184,21 +1210,10 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         return DESC_CAMION_CHASIS
 
     if data == "desc_nuevo_silo":
-        sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
-        lote_id = context.user_data.get("desc_lote_id") or (sesion["lote_id"] if sesion else None)
-        if not lote_id:
-            await query.edit_message_text("No se encontró el lote. Iniciá la sesión de nuevo.")
-            return ConversationHandler.END
-        r      = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
-        numero = (r.data[0]["numero"] + 1) if r.data else 1
-        nuevo  = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
-        if not nuevo.data:
-            await query.edit_message_text("Error al crear el silobolsa. Intentá de nuevo.")
-            return ConversationHandler.END
-        context.user_data["desc_destino_id"]  = nuevo.data[0]["id"]
-        context.user_data["desc_destino_str"] = f"Silobolsa #{numero}"
-        await query.edit_message_text(f"🌾 Silobolsa #{numero} creado.\n\n¿Cuántos kg?")
-        return DESC_KG
+        # Defer silobolsa creation until we know the lote_id
+        context.user_data["desc_crear_silo"] = True
+        context.user_data.pop("desc_destino_id", None)
+        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     if data.startswith("desc_cam_"):
         camion_id = int(data.replace("desc_cam_", ""))
@@ -1210,8 +1225,10 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["desc_destino_id"]  = camion_id
         context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
         context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
-        await query.edit_message_text(f"🚛 {camion['patente_chasis']} / {camion['patente_acoplado']}\n\n¿Cuántos kg?")
-        return DESC_KG
+        if context.user_data.pop("desc_solo_destino", False):
+            await query.edit_message_text(f"🚛 {camion['patente_chasis']} / {camion['patente_acoplado']}\n\n¿Cuántos kg?")
+            return DESC_KG
+        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     if data.startswith("desc_silo_"):
         silo_id = int(data.replace("desc_silo_", ""))
@@ -1219,8 +1236,10 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         numero  = r.data[0]["numero"] if r.data else "?"
         context.user_data["desc_destino_id"]  = silo_id
         context.user_data["desc_destino_str"] = f"Silobolsa #{numero}"
-        await query.edit_message_text(f"🌾 Silobolsa #{numero}\n\n¿Cuántos kg?")
-        return DESC_KG
+        if context.user_data.pop("desc_solo_destino", False):
+            await query.edit_message_text(f"🌾 Silobolsa #{numero}\n\n¿Cuántos kg?")
+            return DESC_KG
+        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     return ConversationHandler.END
 
@@ -1253,13 +1272,10 @@ async def desc_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer()
         if query.data == "desc_acoplado_ok":
             camion = context.user_data["desc_camion_tmp"]
-            if camion.get("cerrado"):
-                supabase.table("camiones").update({"cerrado": False}).eq("id", camion["id"]).execute()
             context.user_data["desc_destino_id"]  = camion["id"]
             context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
             context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
-            await query.edit_message_text(f"🚛 {camion['patente_chasis']} / {camion['patente_acoplado']}\n\n¿Cuántos kg?")
-            return DESC_KG
+            return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
         else:
             await query.edit_message_text("¿Patente del acoplado?")
             return DESC_CAMION_ACOPLADO
@@ -1287,21 +1303,17 @@ async def desc_camion_capacidad(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
         context.user_data["desc_capacidad"]   = cap
         await update.message.reply_text(
-            "No ingresaste capacidad, se asignaron *30.000 kg* por defecto.\n\n¿Cuántos kg descargaste?",
+            "No ingresaste capacidad, se asignaron *30.000 kg* por defecto.",
             parse_mode="Markdown"
         )
-        return DESC_KG
+        return await mostrar_clientes(update.message.reply_text, context, contratista_id)
 
     if 25000 <= cap <= 40000:
         camion_id = _upsert_camion(chasis, acoplado, cap, contratista_id)
         context.user_data["desc_destino_id"]  = camion_id
         context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
         context.user_data["desc_capacidad"]   = cap
-        await update.message.reply_text(
-            f"🚛 *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg descargaste?",
-            parse_mode="Markdown"
-        )
-        return DESC_KG
+        return await mostrar_clientes(update.message.reply_text, context, contratista_id)
 
     context.user_data["desc_cap_tmp"] = cap
     await update.message.reply_text(
@@ -1331,11 +1343,7 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
     context.user_data["desc_destino_id"]  = camion_id
     context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
     context.user_data["desc_capacidad"]   = cap
-    await query.edit_message_text(
-        f"🚛 *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg descargaste?",
-        parse_mode="Markdown"
-    )
-    return DESC_KG
+    return await mostrar_clientes(query.edit_message_text, context, contratista_id)
 
 async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg = parsear_kg(update.message.text)
@@ -1393,10 +1401,7 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DESC_KG
 
     if data == "desc_cambiar_cliente":
-        sesion = get_sesion_por_contratista(context.user_data["contratista_id"])
-        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
-        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
-        return await mostrar_clientes(query, context, context.user_data["contratista_id"], sesion)
+        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     if data == "desc_cambiar_campo":
         return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
@@ -1405,6 +1410,7 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
 
     if data == "desc_cambiar_destino":
+        context.user_data["desc_solo_destino"] = True
         return await mostrar_tipo_destino(query, context)
 
     if data != "desc_confirmar":
