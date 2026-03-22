@@ -1187,11 +1187,18 @@ async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("¿Cuál es el grano?")
         return DESC_GRANO_OTRO
 
-    grano = data.replace("desc_grano_", "")
-    context.user_data["desc_grano"] = grano
-    supabase.table("lotes").update({"grano": grano}).eq("id", context.user_data["desc_lote_id"]).execute()
-    await _guardar_sesion(context, str(query.message.chat_id))
-    return await _continuar_tras_grano(query.edit_message_text, context)
+    try:
+        grano = data.replace("desc_grano_", "")
+        context.user_data["desc_grano"] = grano
+        lote_id = context.user_data.get("desc_lote_id")
+        if lote_id:
+            supabase.table("lotes").update({"grano": grano}).eq("id", lote_id).execute()
+        await _guardar_sesion(context, str(query.message.chat_id))
+        return await _continuar_tras_grano(query.edit_message_text, context)
+    except Exception as e:
+        logging.exception("Error en desc_elegir_grano")
+        await query.edit_message_text(f"❌ Error interno: {e}\n\nEscribí /start para reiniciar.")
+        return ConversationHandler.END
 
 async def desc_grano_otro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grano = update.message.text.strip()
@@ -1216,11 +1223,18 @@ async def _continuar_tras_grano(send_fn, context):
     return DESC_KG
 
 async def _guardar_sesion(context, chat_id=None):
+    cid = context.user_data.get("contratista_id")
+    cli = context.user_data.get("desc_cliente_id")
+    cam = context.user_data.get("desc_campo_id")
+    lot = context.user_data.get("desc_lote_id")
+    if not all([cid, cli, cam, lot]):
+        logging.warning("_guardar_sesion: faltan datos contratista=%s cliente=%s campo=%s lote=%s", cid, cli, cam, lot)
+        return
     supabase.table("sesion_activa").upsert({
-        "contratista_id": context.user_data["contratista_id"],
-        "cliente_id":     context.user_data["desc_cliente_id"],
-        "campo_id":       context.user_data["desc_campo_id"],
-        "lote_id":        context.user_data["desc_lote_id"],
+        "contratista_id": cid,
+        "cliente_id":     cli,
+        "campo_id":       cam,
+        "lote_id":        lot,
         "iniciada_at":    ahora().isoformat()
     }).execute()
 
