@@ -30,7 +30,8 @@ ARG = timezone(timedelta(hours=-3))
     DESC_KG,
     NUEVO_LOTE_NOMBRE, NUEVO_CAMPO_NOMBRE, NUEVO_CLIENTE_NOMBRE,
     CAM_CORREGIR_CAPACIDAD,
-) = range(22)
+    DESC_SESION_CONFIRMAR,
+) = range(23)
 
 GRANOS = ["Trigo", "Soja", "Maíz", "Girasol", "Sorgo"]
 
@@ -935,6 +936,76 @@ async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["contratista_id"] = contratista_id
     return await mostrar_tipo_destino(query, context)
 
+async def mostrar_sesion_o_clientes(send_fn, context, contratista_id):
+    """Muestra resumen de sesión activa para confirmar o cambiar; si no hay sesión va directo a clientes."""
+    sesion = get_sesion_por_contratista(contratista_id)
+    if sesion and sesion.get("cliente_id") and sesion.get("campo_id") and sesion.get("lote_id"):
+        context.user_data["desc_sesion"] = sesion
+        cli   = sesion.get("clientes") or {}
+        campo = sesion.get("campos")   or {}
+        lote  = sesion.get("lotes")    or {}
+        grano = lote.get("grano", "")
+        grano_str = f" ({grano})" if grano else ""
+        texto = (
+            f"📋 *Datos actuales:*\n\n"
+            f"Cliente: *{cli.get('nombre','')} {cli.get('apellido','')}*\n"
+            f"Campo:   *{campo.get('nombre','')}*\n"
+            f"Lote:    *{lote.get('nombre','')}*{grano_str}"
+        )
+        botones = [
+            [InlineKeyboardButton("✅ Confirmar datos", callback_data="desc_confirmar_sesion")],
+            [InlineKeyboardButton("👤 Cambiar cliente", callback_data="desc_cambiar_cliente"),
+             InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo")],
+            [InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote")],
+            [btn_cancelar()]
+        ]
+        await send_fn(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        return DESC_SESION_CONFIRMAR
+    return await mostrar_clientes(send_fn, context, contratista_id)
+
+async def desc_sesion_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data           = query.data
+    contratista_id = context.user_data["contratista_id"]
+    sesion         = context.user_data.get("desc_sesion") or get_sesion_por_contratista(contratista_id)
+
+    if data == "desc_confirmar_sesion":
+        cli   = sesion.get("clientes") or {}
+        campo = sesion.get("campos")   or {}
+        lote  = sesion.get("lotes")    or {}
+        context.user_data["desc_cliente_id"]  = sesion["cliente_id"]
+        context.user_data["desc_cliente_str"] = f"{cli.get('nombre','')} {cli.get('apellido','')}".strip()
+        context.user_data["desc_campo_id"]    = sesion["campo_id"]
+        context.user_data["desc_campo_str"]   = campo.get("nombre", "")
+        context.user_data["desc_lote_id"]     = sesion["lote_id"]
+        context.user_data["desc_lote_str"]    = lote.get("nombre", "")
+        context.user_data["desc_grano"]       = lote.get("grano", "")
+        return await _continuar_tras_grano(query.edit_message_text, context)
+
+    if data == "desc_cambiar_cliente":
+        return await mostrar_clientes(query.edit_message_text, context, contratista_id)
+
+    if data == "desc_cambiar_campo":
+        cli = sesion.get("clientes") or {}
+        context.user_data["desc_cliente_id"]      = sesion["cliente_id"]
+        context.user_data["desc_cliente_str"]     = f"{cli.get('nombre','')} {cli.get('apellido','')}".strip()
+        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"]
+        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]
+        return await mostrar_campos(query.edit_message_text, context, sesion["cliente_id"])
+
+    if data == "desc_cambiar_lote":
+        cli   = sesion.get("clientes") or {}
+        campo = sesion.get("campos")   or {}
+        context.user_data["desc_cliente_id"]     = sesion["cliente_id"]
+        context.user_data["desc_cliente_str"]    = f"{cli.get('nombre','')} {cli.get('apellido','')}".strip()
+        context.user_data["desc_campo_id"]       = sesion["campo_id"]
+        context.user_data["desc_campo_str"]      = campo.get("nombre", "")
+        context.user_data["desc_sesion_lote_id"] = sesion["lote_id"]
+        return await mostrar_lotes(query.edit_message_text, context, sesion["campo_id"])
+
+    return ConversationHandler.END
+
 async def mostrar_clientes(send_fn, context, contratista_id):
     sesion  = get_sesion_por_contratista(contratista_id)
     context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
@@ -974,7 +1045,7 @@ async def desc_elegir_cliente(update: Update, context: ContextTypes.DEFAULT_TYPE
     c = r.data[0]
     context.user_data["desc_cliente_id"]  = cli_id
     context.user_data["desc_cliente_str"] = f"{c['nombre']} {c['apellido']}"
-    return await mostrar_campos(query, context, cli_id)
+    return await mostrar_campos(query.edit_message_text, context, cli_id)
 
 async def desc_nuevo_cliente_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto          = update.message.text.strip()
@@ -997,7 +1068,7 @@ async def desc_nuevo_cliente_nombre(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(f"Cliente *{texto}* creado.\n\n¿En qué campo?", parse_mode="Markdown", reply_markup=teclado)
     return DESC_CAMPO
 
-async def mostrar_campos(query, context, cliente_id):
+async def mostrar_campos(send_fn, context, cliente_id):
     campos = get_campos(cliente_id)
     sesion_campo_id = context.user_data.get("desc_sesion_campo_id")
     botones = []
@@ -1006,7 +1077,7 @@ async def mostrar_campos(query, context, cliente_id):
         botones.append([InlineKeyboardButton(f"{marca}{c['nombre']}", callback_data=f"desc_campo_{c['id']}")])
     botones.append([InlineKeyboardButton("➕ Nuevo campo", callback_data="desc_nuevo_campo")])
     botones.append([btn_cancelar()])
-    await query.edit_message_text("¿En qué campo?", reply_markup=InlineKeyboardMarkup(botones))
+    await send_fn("¿En qué campo?", reply_markup=InlineKeyboardMarkup(botones))
     return DESC_CAMPO
 
 async def desc_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1025,7 +1096,7 @@ async def desc_elegir_campo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     context.user_data["desc_campo_id"]  = campo_id
     context.user_data["desc_campo_str"] = r.data[0]["nombre"]
-    return await mostrar_lotes(query, context, campo_id)
+    return await mostrar_lotes(query.edit_message_text, context, campo_id)
 
 async def desc_nuevo_campo_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto      = update.message.text.strip()
@@ -1044,17 +1115,16 @@ async def desc_nuevo_campo_nombre(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"Campo *{texto}* creado.\n\n¿En qué lote?", parse_mode="Markdown", reply_markup=teclado)
     return DESC_LOTE
 
-async def mostrar_lotes(query, context, campo_id):
+async def mostrar_lotes(send_fn, context, campo_id):
     lotes           = get_lotes(campo_id)
     sesion_lote_id  = context.user_data.get("desc_sesion_lote_id")
     botones = []
     for l in lotes:
         marca = "✅ " if l["id"] == sesion_lote_id else ""
-        grano = f" ({l['grano']})" if l.get("grano") else ""
-        botones.append([InlineKeyboardButton(f"{marca}{l['nombre']}{grano}", callback_data=f"desc_lote_{l['id']}")])
+        botones.append([InlineKeyboardButton(f"{marca}{l['nombre']}", callback_data=f"desc_lote_{l['id']}")])
     botones.append([InlineKeyboardButton("➕ Nuevo lote", callback_data="desc_nuevo_lote")])
     botones.append([btn_cancelar()])
-    await query.edit_message_text("¿En qué lote?", reply_markup=InlineKeyboardMarkup(botones))
+    await send_fn("¿En qué lote?", reply_markup=InlineKeyboardMarkup(botones))
     return DESC_LOTE
 
 async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1074,13 +1144,7 @@ async def desc_elegir_lote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lote = r.data[0]
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = lote["nombre"]
-
-    if not lote.get("grano"):
-        return await mostrar_granos(query)
-
-    context.user_data["desc_grano"] = lote["grano"]
-    await _guardar_sesion(context, str(query.message.chat_id))
-    return await _continuar_tras_grano(query.edit_message_text, context)
+    return await mostrar_granos(query.edit_message_text)
 
 async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto    = update.message.text.strip()
@@ -1104,14 +1168,14 @@ async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_T
     )
     return DESC_GRANO_OTRO
 
-async def mostrar_granos(query):
+async def mostrar_granos(send_fn):
     botones = []
     iconos  = {"Trigo": "🌾", "Soja": "🌱", "Maíz": "🌽", "Girasol": "🌻", "Sorgo": "🧅"}
     for g in GRANOS:
         botones.append([InlineKeyboardButton(f"{iconos.get(g,'')} {g}", callback_data=f"desc_grano_{g}")])
     botones.append([InlineKeyboardButton("✏️ Otro", callback_data="desc_grano_otro")])
     botones.append([btn_cancelar()])
-    await query.edit_message_text("¿Qué grano se cosecha en este lote?", reply_markup=InlineKeyboardMarkup(botones))
+    await send_fn("¿Qué grano?", reply_markup=InlineKeyboardMarkup(botones))
     return DESC_LOTE
 
 async def desc_elegir_grano(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1210,10 +1274,9 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         return DESC_CAMION_CHASIS
 
     if data == "desc_nuevo_silo":
-        # Defer silobolsa creation until we know the lote_id
         context.user_data["desc_crear_silo"] = True
         context.user_data.pop("desc_destino_id", None)
-        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
+        return await mostrar_sesion_o_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     if data.startswith("desc_cam_"):
         camion_id = int(data.replace("desc_cam_", ""))
@@ -1225,10 +1288,7 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["desc_destino_id"]  = camion_id
         context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
         context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
-        if context.user_data.pop("desc_solo_destino", False):
-            await query.edit_message_text(f"🚛 {camion['patente_chasis']} / {camion['patente_acoplado']}\n\n¿Cuántos kg?")
-            return DESC_KG
-        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
+        return await mostrar_sesion_o_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     if data.startswith("desc_silo_"):
         silo_id = int(data.replace("desc_silo_", ""))
@@ -1236,10 +1296,7 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         numero  = r.data[0]["numero"] if r.data else "?"
         context.user_data["desc_destino_id"]  = silo_id
         context.user_data["desc_destino_str"] = f"Silobolsa #{numero}"
-        if context.user_data.pop("desc_solo_destino", False):
-            await query.edit_message_text(f"🌾 Silobolsa #{numero}\n\n¿Cuántos kg?")
-            return DESC_KG
-        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
+        return await mostrar_sesion_o_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
 
     return ConversationHandler.END
 
@@ -1275,7 +1332,7 @@ async def desc_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data["desc_destino_id"]  = camion["id"]
             context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
             context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
-            return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
+            return await mostrar_sesion_o_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
         else:
             await query.edit_message_text("¿Patente del acoplado?")
             return DESC_CAMION_ACOPLADO
@@ -1306,14 +1363,14 @@ async def desc_camion_capacidad(update: Update, context: ContextTypes.DEFAULT_TY
             "No ingresaste capacidad, se asignaron *30.000 kg* por defecto.",
             parse_mode="Markdown"
         )
-        return await mostrar_clientes(update.message.reply_text, context, contratista_id)
+        return await mostrar_sesion_o_clientes(update.message.reply_text, context, contratista_id)
 
     if 25000 <= cap <= 40000:
         camion_id = _upsert_camion(chasis, acoplado, cap, contratista_id)
         context.user_data["desc_destino_id"]  = camion_id
         context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
         context.user_data["desc_capacidad"]   = cap
-        return await mostrar_clientes(update.message.reply_text, context, contratista_id)
+        return await mostrar_sesion_o_clientes(update.message.reply_text, context, contratista_id)
 
     context.user_data["desc_cap_tmp"] = cap
     await update.message.reply_text(
@@ -1343,7 +1400,7 @@ async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT
     context.user_data["desc_destino_id"]  = camion_id
     context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
     context.user_data["desc_capacidad"]   = cap
-    return await mostrar_clientes(query.edit_message_text, context, contratista_id)
+    return await mostrar_sesion_o_clientes(query.edit_message_text, context, contratista_id)
 
 async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kg = parsear_kg(update.message.text)
@@ -1352,8 +1409,6 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DESC_KG
 
     context.user_data["desc_kg"] = kg
-    sesion  = get_sesion_por_contratista(context.user_data["contratista_id"])
-
     cliente_str = context.user_data.get("desc_cliente_str") or ""
     campo_str   = context.user_data.get("desc_campo_str")   or ""
     lote_str    = context.user_data.get("desc_lote_str")    or ""
@@ -1362,28 +1417,16 @@ async def desc_recibir_kg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tipo        = context.user_data.get("desc_tipo", "camion")
     icono       = "🚛" if tipo == "camion" else "🌾"
 
-    if not cliente_str and sesion:
-        c = sesion.get("clientes") or {}
-        cliente_str = f"{c.get('nombre','')} {c.get('apellido','')}".strip()
-        campo_str   = (sesion.get("campos") or {}).get("nombre","")
-        lote_str    = (sesion.get("lotes")  or {}).get("nombre","")
-        grano       = (sesion.get("lotes")  or {}).get("grano","")
-
     texto = (
         f"📋 *Confirmar descarga*\n\n"
         f"Cliente: *{cliente_str}*\n"
-        f"Campo: *{campo_str}*\n"
-        f"Lote: *{lote_str}* ({grano})\n"
+        f"Campo:   *{campo_str}*\n"
+        f"Lote:    *{lote_str}* ({grano})\n"
         f"Destino: {icono} *{destino_str}*\n"
-        f"Kg: *{kg:,.0f}*"
+        f"Kg:      *{kg:,.0f}*"
     )
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirmar",       callback_data="desc_confirmar")],
-        [InlineKeyboardButton("👤 Cambiar cliente", callback_data="desc_cambiar_cliente"),
-         InlineKeyboardButton("🌾 Cambiar campo",   callback_data="desc_cambiar_campo")],
-        [InlineKeyboardButton("🌱 Cambiar lote",    callback_data="desc_cambiar_lote"),
-         InlineKeyboardButton("🚛 Cambiar destino", callback_data="desc_cambiar_destino")],
-        [InlineKeyboardButton("⚖️ Cambiar kg",      callback_data="desc_cambiar_kg")],
+        [InlineKeyboardButton("✅ Confirmar", callback_data="desc_confirmar")],
         [btn_cancelar()]
     ])
     await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado)
@@ -1396,22 +1439,12 @@ async def desc_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     data    = query.data
 
-    if data == "desc_cambiar_kg":
-        await query.edit_message_text("¿Cuántos kg?")
-        return DESC_KG
-
-    if data == "desc_cambiar_cliente":
-        return await mostrar_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
-
-    if data == "desc_cambiar_campo":
-        return await mostrar_campos(query, context, context.user_data["desc_cliente_id"])
-
-    if data == "desc_cambiar_lote":
-        return await mostrar_lotes(query, context, context.user_data["desc_campo_id"])
-
-    if data == "desc_cambiar_destino":
-        context.user_data["desc_solo_destino"] = True
-        return await mostrar_tipo_destino(query, context)
+    if data == "op_cancelar":
+        uid_op = str(update.effective_user.id)
+        cont   = get_contratista(uid_op)
+        cid    = cont["id"] if cont else get_contratista_id_de_usuario(uid_op)
+        await query.edit_message_text("Descarga cancelada.", reply_markup=teclado_menu(cid, es_contratista=bool(cont), telegram_id=uid_op if cont else None))
+        return ConversationHandler.END
 
     if data != "desc_confirmar":
         return DESC_KG
@@ -1655,30 +1688,6 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("¿Cuál es la capacidad correcta en kg? (ej: 30000)")
         return CAM_CORREGIR_CAPACIDAD
 
-    if accion == "desc_continuar":
-        contratista_id = get_contratista_id_de_usuario(uid)
-        sesion = get_sesion_por_contratista(contratista_id)
-        if sesion:
-            context.user_data["contratista_id"]   = sesion["contratista_id"]
-            context.user_data["desc_cliente_id"]  = sesion["cliente_id"]
-            context.user_data["desc_campo_id"]    = sesion["campo_id"]
-            context.user_data["desc_lote_id"]     = sesion["lote_id"]
-            lote = sesion.get("lotes") or {}
-            context.user_data["desc_grano"]       = lote.get("grano","")
-            c = sesion.get("clientes") or {}
-            context.user_data["desc_cliente_str"] = f"{c.get('nombre','')} {c.get('apellido','')}".strip()
-            context.user_data["desc_campo_str"]   = (sesion.get("campos") or {}).get("nombre","")
-            context.user_data["desc_lote_str"]    = lote.get("nombre","")
-        return await mostrar_tipo_destino(query, context)
-
-    if accion == "desc_cambiar":
-        contratista_id = get_contratista_id_de_usuario(uid)
-        sesion         = get_sesion_por_contratista(contratista_id)
-        context.user_data["contratista_id"]       = contratista_id
-        context.user_data["desc_sesion_campo_id"] = sesion["campo_id"] if sesion else None
-        context.user_data["desc_sesion_lote_id"]  = sesion["lote_id"]  if sesion else None
-        return await mostrar_clientes(query, context, contratista_id, sesion)
-
     return ConversationHandler.END
 
 async def cam_recibir_nueva_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1774,6 +1783,7 @@ if __name__ == "__main__":
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
             DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
+            DESC_SESION_CONFIRMAR: [CallbackQueryHandler(desc_sesion_confirmar, pattern="^desc_confirmar_sesion$|^desc_cambiar_cliente$|^desc_cambiar_campo$|^desc_cambiar_lote$|^op_cancelar$")],
             DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
                                  CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
@@ -1784,7 +1794,7 @@ if __name__ == "__main__":
                 CallbackQueryHandler(desc_confirmar_capacidad, pattern="^cap_"),
             ],
             DESC_KG:            [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
-                                 CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$")],
+                                 CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^op_cancelar$")],
         },
         fallbacks=[
             CallbackQueryHandler(menu_operario_callback, pattern="^op_cancelar$"),
@@ -1796,8 +1806,9 @@ if __name__ == "__main__":
     operario_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_)")],
         states={
+            DESC_SESION_CONFIRMAR: [CallbackQueryHandler(desc_sesion_confirmar, pattern="^desc_confirmar_sesion$|^desc_cambiar_cliente$|^desc_cambiar_campo$|^desc_cambiar_lote$|^op_cancelar$")],
             DESC_KG: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
-                      CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$|^cam_cerrar_")],
+                      CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^op_cancelar$|^cam_cerrar_")],
             CAM_CORREGIR_CAPACIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, cam_recibir_nueva_capacidad)],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
