@@ -910,10 +910,9 @@ async def add_cli_soy_yo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Flujo de descarga ────────────────────────────────────────
 async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query  = update.callback_query
     await query.answer()
-    uid     = str(update.effective_user.id)
-    chat_id = str(update.effective_chat.id)
+    uid    = str(update.effective_user.id)
 
     contratista_id = get_contratista_id_de_usuario(uid)
     if not contratista_id:
@@ -921,28 +920,7 @@ async def iniciar_descarga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["contratista_id"] = contratista_id
-    sesion = get_sesion_por_contratista(contratista_id)
-
-    if sesion and sesion.get("lote_id"):
-        cliente_obj = sesion.get("clientes") or {}
-        campo_obj   = sesion.get("campos")   or {}
-        lote_obj    = sesion.get("lotes")    or {}
-        grano       = lote_obj.get("grano", "Sin definir")
-        texto = (
-            f"📋 *Sesión activa:*\n"
-            f"Cliente: *{cliente_obj.get('nombre','')} {cliente_obj.get('apellido','')}*\n"
-            f"Campo: *{campo_obj.get('nombre','')}*\n"
-            f"Lote: *{lote_obj.get('nombre','')}* ({grano})"
-        )
-        teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Continuar",      callback_data="desc_continuar")],
-            [InlineKeyboardButton("🔄 Cambiar datos",  callback_data="desc_cambiar")],
-            [InlineKeyboardButton("❌ Cancelar",        callback_data="op_cancelar")],
-        ])
-        await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=teclado)
-        return ConversationHandler.END
-    else:
-        return await mostrar_clientes(query, context, contratista_id, sesion)
+    return await mostrar_tipo_destino(query, context)
 
 async def mostrar_clientes(query, context, contratista_id, sesion=None):
     clientes = get_clientes(contratista_id)
@@ -1801,7 +1779,6 @@ if __name__ == "__main__":
     descarga_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(iniciar_descarga, pattern="^op_descarga$"),
-            CallbackQueryHandler(menu_operario_callback, pattern="^(desc_continuar$|desc_cambiar$)"),
         ],
         states={
             DESC_CLIENTE:       [CallbackQueryHandler(desc_elegir_cliente,  pattern="^desc_cli_|^desc_nuevo_cliente$")],
@@ -1834,7 +1811,7 @@ if __name__ == "__main__":
     )
 
     operario_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_|desc_continuar$|desc_cambiar$)")],
+        entry_points=[CallbackQueryHandler(menu_operario_callback, pattern="^(op_menu$|op_cancelar$|op_camiones$|op_silos$|cam_detalle_|silo_detalle_|cam_cerrar_|cam_reabrir_|silo_cerrar_|silo_reabrir_|cam_forzar_desc_|silo_forzar_desc_|cam_corregir_cap_)")],
         states={
             DESC_KG: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_recibir_kg),
                       CallbackQueryHandler(desc_confirmar, pattern="^desc_confirmar$|^desc_cambiar_|^op_cancelar$|^cam_cerrar_")],
