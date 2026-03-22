@@ -420,32 +420,30 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
     if accion == "cont_ver_op":
         operarios = get_operarios(cont["id"])
         botones   = []
-        lineas    = ["👷 *Mis operarios*\n"] if operarios else ["No tenés operarios registrados todavía."]
         for op in operarios:
             icono = "✅" if op.get("telegram_id") else "⏳"
-            lineas.append(f"{icono} {op['nombre']}")
             botones.append([InlineKeyboardButton(f"{icono} {op['nombre']}", callback_data=f"op_detalle_{op['id']}")])
         botones.append([InlineKeyboardButton("➕ Agregar operario", callback_data="cont_add_op")])
         botones.append([InlineKeyboardButton("⬅️ Volver",           callback_data="cont_volver")])
-        await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        texto = f"👷 *Mis operarios* ({len(operarios)})" if operarios else "No tenés operarios registrados todavía."
+        await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion == "cont_ver_cli":
         clientes = get_clientes(cont["id"])
         botones  = []
-        lineas   = ["👤 *Mis clientes*\n"] if clientes else ["No tenés clientes registrados todavía."]
         for cli in clientes:
             icono = "✅" if cli.get("telegram_id") else "⏳"
-            lineas.append(f"{icono} {cli['nombre']} {cli['apellido']}")
             botones.append([InlineKeyboardButton(f"{icono} {cli['nombre']} {cli['apellido']}", callback_data=f"cli_detalle_{cli['id']}")])
         botones.append([InlineKeyboardButton("➕ Agregar cliente", callback_data="cont_add_cli")])
         botones.append([InlineKeyboardButton("⬅️ Volver",          callback_data="cont_volver")])
-        await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        texto = f"👤 *Mis clientes* ({len(clientes)})" if clientes else "No tenés clientes registrados todavía."
+        await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     elif accion.startswith("op_detalle_"):
         op_id = int(accion.replace("op_detalle_", ""))
-        r     = supabase.table("usuarios").select("*").eq("id", op_id).execute()
+        r     = supabase.table("usuarios").select("id,nombre,telegram_id,codigo_acceso").eq("id", op_id).execute()
         if not r.data:
             await query.edit_message_text("No se encontró el operario.")
             return ConversationHandler.END
@@ -502,6 +500,8 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
         if r.data:
             c = r.data[0]
             await query.answer(f"Código de {c['nombre']} {c['apellido']}: {c['codigo_acceso']}", show_alert=True)
+        else:
+            await query.answer("No se encontró el cliente.", show_alert=True)
         return ConversationHandler.END
 
     elif accion.startswith("op_eliminar_"):
