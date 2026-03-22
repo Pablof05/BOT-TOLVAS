@@ -103,14 +103,16 @@ def get_camiones_abiertos(contratista_id: int):
 
 def get_silobolsas_abiertos(contratista_id: int):
     r = (supabase.table("silobolsas")
-         .select("*, lotes(nombre, grano, campos(nombre))")
+         .select("*, lotes(nombre, grano, campos(nombre, clientes(contratista_id)))")
          .eq("cerrado", False)
          .execute())
     silos = []
     for s in r.data or []:
-        lote = s.get("lotes") or {}
-        campo = lote.get("campos") or {}
+        lote  = s.get("lotes") or {}
         if not lote: continue
+        campo = lote.get("campos") or {}
+        cli   = campo.get("clientes") or {}
+        if cli.get("contratista_id") != contratista_id: continue
         acum = kg_acumulado_silo(s["id"])
         silos.append({**s, "acumulado": acum, "lote_nombre": lote.get("nombre",""), "campo_nombre": campo.get("nombre",""), "grano": lote.get("grano","")})
     return silos
@@ -488,7 +490,10 @@ async def menu_contratista_callback(update: Update, context: ContextTypes.DEFAUL
     elif accion.startswith("op_vercodigo_"):
         op_id = int(accion.replace("op_vercodigo_", ""))
         r     = supabase.table("usuarios").select("nombre,codigo_acceso").eq("id", op_id).execute()
-        if r.data: await query.answer(f"Código de {r.data[0]['nombre']}: {r.data[0]['codigo_acceso']}", show_alert=True)
+        if r.data:
+            await query.answer(f"Código de {r.data[0]['nombre']}: {r.data[0]['codigo_acceso']}", show_alert=True)
+        else:
+            await query.answer("No se encontró el operario.", show_alert=True)
         return ConversationHandler.END
 
     elif accion.startswith("cli_vercodigo_"):
@@ -952,6 +957,9 @@ async def desc_nuevo_cliente_nombre(update: Update, context: ContextTypes.DEFAUL
         "nombre": partes[0], "apellido": " ".join(partes[1:]) if len(partes) > 1 else "",
         "contratista_id": contratista_id
     }).execute()
+    if not nuevo.data:
+        await update.message.reply_text("Error al crear el cliente. Intentá de nuevo.")
+        return ConversationHandler.END
     cli_id = nuevo.data[0]["id"]
     context.user_data["desc_cliente_id"]  = cli_id
     context.user_data["desc_cliente_str"] = texto
@@ -996,6 +1004,9 @@ async def desc_nuevo_campo_nombre(update: Update, context: ContextTypes.DEFAULT_
     texto      = update.message.text.strip()
     cliente_id = context.user_data["desc_cliente_id"]
     nuevo      = supabase.table("campos").insert({"nombre": texto, "cliente_id": cliente_id}).execute()
+    if not nuevo.data:
+        await update.message.reply_text("Error al crear el campo. Intentá de nuevo.")
+        return ConversationHandler.END
     campo_id   = nuevo.data[0]["id"]
     context.user_data["desc_campo_id"]  = campo_id
     context.user_data["desc_campo_str"] = texto
@@ -1048,6 +1059,9 @@ async def desc_nuevo_lote_nombre(update: Update, context: ContextTypes.DEFAULT_T
     texto    = update.message.text.strip()
     campo_id = context.user_data["desc_campo_id"]
     nuevo    = supabase.table("lotes").insert({"nombre": texto, "campo_id": campo_id}).execute()
+    if not nuevo.data:
+        await update.message.reply_text("Error al crear el lote. Intentá de nuevo.")
+        return ConversationHandler.END
     lote_id  = nuevo.data[0]["id"]
     context.user_data["desc_lote_id"]  = lote_id
     context.user_data["desc_lote_str"] = texto
@@ -1168,6 +1182,9 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
         r      = supabase.table("silobolsas").select("numero").eq("lote_id", lote_id).order("numero", desc=True).execute()
         numero = (r.data[0]["numero"] + 1) if r.data else 1
         nuevo  = supabase.table("silobolsas").insert({"numero": numero, "lote_id": lote_id}).execute()
+        if not nuevo.data:
+            await query.edit_message_text("Error al crear el silobolsa. Intentá de nuevo.")
+            return ConversationHandler.END
         context.user_data["desc_destino_id"]  = nuevo.data[0]["id"]
         context.user_data["desc_destino_str"] = f"Silobolsa #{numero}"
         await query.edit_message_text(f"🌾 Silobolsa #{numero} creado.\n\n¿Cuántos kg?")
@@ -1176,6 +1193,9 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
     if data.startswith("desc_cam_"):
         camion_id = int(data.replace("desc_cam_", ""))
         r         = supabase.table("camiones").select("*").eq("id", camion_id).execute()
+        if not r.data:
+            await query.edit_message_text("No se encontró el camión.")
+            return ConversationHandler.END
         camion    = r.data[0]
         context.user_data["desc_destino_id"]  = camion_id
         context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
@@ -1611,6 +1631,9 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
     if accion.startswith("cam_forzar_desc_"):
         camion_id = int(accion.replace("cam_forzar_desc_", ""))
         r         = supabase.table("camiones").select("*").eq("id", camion_id).execute()
+        if not r.data:
+            await query.edit_message_text("No se encontró el camión.")
+            return ConversationHandler.END
         camion    = r.data[0]
         context.user_data["desc_tipo"]         = "camion"
         context.user_data["desc_destino_id"]   = camion_id
@@ -1674,6 +1697,9 @@ async def cam_recibir_nueva_capacidad(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("La capacidad debe ser mayor a 0. Ej: `30000`", parse_mode="Markdown")
         return CAM_CORREGIR_CAPACIDAD
     camion_id      = context.user_data.get("cam_corregir_id")
+    if not camion_id:
+        await update.message.reply_text("Error: no se encontró el camión. Escribí /start.")
+        return ConversationHandler.END
     uid_cap        = str(update.effective_user.id)
     cont_cap       = get_contratista(uid_cap)
     contratista_id_cap = cont_cap["id"] if cont_cap else get_contratista_id_de_usuario(uid_cap)
