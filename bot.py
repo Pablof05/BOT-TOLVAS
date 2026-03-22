@@ -117,6 +117,22 @@ def get_silobolsas_abiertos(contratista_id: int):
         silos.append({**s, "acumulado": acum, "lote_nombre": lote.get("nombre",""), "campo_nombre": campo.get("nombre",""), "grano": lote.get("grano","")})
     return silos
 
+def get_camiones_por_ids(ids: set) -> list:
+    if not ids: return []
+    result = []
+    for c in (supabase.table("camiones").select("*").in_("id", list(ids)).execute().data or []):
+        result.append({**c, "acumulado": kg_acumulado_camion(c["id"])})
+    return result
+
+def get_silobolsas_por_ids(ids: set) -> list:
+    if not ids: return []
+    result = []
+    for s in (supabase.table("silobolsas").select("*, lotes(nombre,grano)").in_("id", list(ids)).execute().data or []):
+        lote = s.get("lotes") or {}
+        result.append({**s, "acumulado": kg_acumulado_silo(s["id"]),
+                       "lote_nombre": lote.get("nombre",""), "grano": lote.get("grano","")})
+    return result
+
 def kg_acumulado_camion(camion_id: int):
     r = supabase.table("descargas").select("kg").eq("camion_id", camion_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
@@ -1508,44 +1524,46 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(texto, reply_markup=mk)
         return ConversationHandler.END
 
-    if accion == "op_camiones":
-        camiones = get_camiones_abiertos(contratista_id)
-        r_cerrados = supabase.table("camiones").select("*").eq("contratista_id", contratista_id).eq("cerrado", True).execute()
-        cerrados   = r_cerrados.data or []
-        botones    = []
-        lineas     = ["🚛 *Camiones*\n"]
-        for c in camiones:
-            cap_str = f" ({c['acumulado']:,.0f}/{c['capacidad_kg']:,.0f} kg)" if c.get("capacidad_kg") else f" ({c['acumulado']:,.0f} kg)"
-            lineas.append(f"🟢 {c['patente_chasis']} / {c['patente_acoplado']}{cap_str}")
-            botones.append([InlineKeyboardButton(f"🟢 {c['patente_chasis']} / {c['patente_acoplado']}", callback_data=f"cam_detalle_{c['id']}")])
-        for c in cerrados:
-            acum = kg_acumulado_camion(c["id"])
-            lineas.append(f"🔒 {c['patente_chasis']} / {c['patente_acoplado']} ({acum:,.0f} kg)")
-            botones.append([InlineKeyboardButton(f"🔒 {c['patente_chasis']} / {c['patente_acoplado']}", callback_data=f"cam_detalle_{c['id']}")])
-        if not camiones and not cerrados:
-            lineas = ["No hay camiones registrados todavía."]
-        botones.append([btn_cancelar("op_menu")])
-        await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
-        return ConversationHandler.END
+    if accion in ("op_camiones", "op_silos"):
+        desde = (ahora() - timedelta(days=2)).isoformat()
+        if cont:
+            filtro = {"contratista_id": cont["id"]}
+        else:
+            op = get_usuario(uid)
+            filtro = {"operario_id": op["id"]} if op else {}
 
-    if accion == "op_silos":
-        silos_abiertos = get_silobolsas_abiertos(contratista_id)
-        r_cerrados     = supabase.table("silobolsas").select("*, lotes(nombre,grano)").eq("cerrado", True).execute()
-        cerrados       = r_cerrados.data or []
-        botones        = []
-        lineas         = ["🌾 *Silobolsas*\n"]
-        for s in silos_abiertos:
-            lineas.append(f"🟢 Silo #{s['numero']} — {s['lote_nombre']} ({s['grano']}) — {s['acumulado']:,.0f} kg")
-            botones.append([InlineKeyboardButton(f"🟢 Silo #{s['numero']} — {s['lote_nombre']}", callback_data=f"silo_detalle_{s['id']}")])
-        for s in cerrados:
-            lote  = s.get("lotes") or {}
-            acum  = kg_acumulado_silo(s["id"])
-            lineas.append(f"🔒 Silo #{s['numero']} — {lote.get('nombre','')} — {acum:,.0f} kg")
-            botones.append([InlineKeyboardButton(f"🔒 Silo #{s['numero']} — {lote.get('nombre','')}", callback_data=f"silo_detalle_{s['id']}")])
-        if not silos_abiertos and not cerrados:
-            lineas = ["No hay silobolsas registrados todavía."]
+        if filtro:
+            q_cam  = supabase.table("descargas").select("camion_id").gte("created_at", desde)
+            q_silo = supabase.table("descargas").select("silobolsa_id").gte("created_at", desde)
+            for col, val in filtro.items():
+                q_cam  = q_cam.eq(col, val)
+                q_silo = q_silo.eq(col, val)
+            ids_cam  = {d["camion_id"]    for d in (q_cam.execute().data  or []) if d.get("camion_id")}
+            ids_silo = {d["silobolsa_id"] for d in (q_silo.execute().data or []) if d.get("silobolsa_id")}
+        else:
+            ids_cam = ids_silo = set()
+
+        if accion == "op_camiones":
+            camiones = get_camiones_por_ids(ids_cam)
+            botones  = []
+            for c in sorted(camiones, key=lambda x: x.get("cerrado", False)):
+                icono   = "🔒" if c.get("cerrado") else "🟢"
+                cap_str = f" ({c['acumulado']:,.0f}/{c['capacidad_kg']:,.0f} kg)" if c.get("capacidad_kg") else f" ({c['acumulado']:,.0f} kg)"
+                botones.append([InlineKeyboardButton(f"{icono} {c['patente_chasis']} / {c['patente_acoplado']}{cap_str}", callback_data=f"cam_detalle_{c['id']}")])
+            texto = "🚛 *Camiones — últimos 2 días*" if camiones else "No hay camiones con descargas en los últimos 2 días."
+            botones.append([btn_cancelar("op_menu")])
+            await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+            return ConversationHandler.END
+
+        # op_silos
+        silos   = get_silobolsas_por_ids(ids_silo)
+        botones = []
+        for s in sorted(silos, key=lambda x: x.get("cerrado", False)):
+            icono = "🔒" if s.get("cerrado") else "🟢"
+            botones.append([InlineKeyboardButton(f"{icono} Silo #{s['numero']} — {s['lote_nombre']}", callback_data=f"silo_detalle_{s['id']}")])
+        texto = "🌾 *Silobolsas — últimos 2 días*" if silos else "No hay silobolsas con descargas en los últimos 2 días."
         botones.append([btn_cancelar("op_menu")])
-        await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
+        await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
         return ConversationHandler.END
 
     if accion.startswith("cam_detalle_"):
