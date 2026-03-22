@@ -119,17 +119,26 @@ def get_silobolsas_abiertos(contratista_id: int):
 
 def get_camiones_por_ids(ids: set) -> list:
     if not ids: return []
-    result = []
-    for c in (supabase.table("camiones").select("*").in_("id", list(ids)).execute().data or []):
-        result.append({**c, "acumulado": kg_acumulado_camion(c["id"])})
-    return result
+    ids_l    = list(ids)
+    camiones = supabase.table("camiones").select("id,patente_chasis,patente_acoplado,cerrado,capacidad_kg").in_("id", ids_l).execute().data or []
+    desc     = supabase.table("descargas").select("camion_id,kg").in_("camion_id", ids_l).execute().data or []
+    kg_map   = {}
+    for d in desc:
+        kg_map[d["camion_id"]] = kg_map.get(d["camion_id"], 0) + float(d["kg"])
+    return [{**c, "acumulado": kg_map.get(c["id"], 0)} for c in camiones]
 
 def get_silobolsas_por_ids(ids: set) -> list:
     if not ids: return []
+    ids_l = list(ids)
+    silos = supabase.table("silobolsas").select("id,numero,cerrado,lote_id,lotes(nombre,grano)").in_("id", ids_l).execute().data or []
+    desc  = supabase.table("descargas").select("silobolsa_id,kg").in_("silobolsa_id", ids_l).execute().data or []
+    kg_map = {}
+    for d in desc:
+        kg_map[d["silobolsa_id"]] = kg_map.get(d["silobolsa_id"], 0) + float(d["kg"])
     result = []
-    for s in (supabase.table("silobolsas").select("*, lotes(nombre,grano)").in_("id", list(ids)).execute().data or []):
+    for s in silos:
         lote = s.get("lotes") or {}
-        result.append({**s, "acumulado": kg_acumulado_silo(s["id"]),
+        result.append({**s, "acumulado": kg_map.get(s["id"], 0),
                        "lote_nombre": lote.get("nombre",""), "grano": lote.get("grano","")})
     return result
 
@@ -140,6 +149,13 @@ def kg_acumulado_camion(camion_id: int):
 def kg_acumulado_silo(silo_id: int):
     r = supabase.table("descargas").select("kg").eq("silobolsa_id", silo_id).execute()
     return sum(float(x["kg"]) for x in r.data) if r.data else 0
+
+def lineas_contexto(cli: dict, campo: dict, lote: dict) -> list:
+    lineas = []
+    if cli:   lineas.append(f"Cliente: {cli.get('nombre','')} {cli.get('apellido','')}")
+    if campo: lineas.append(f"Campo:   {campo.get('nombre','')}")
+    if lote:  lineas.append(f"Lote:    {lote.get('nombre','')} ({lote.get('grano','')})")
+    return lineas
 
 def barra(actual, total):
     if not total: return ""
@@ -1525,26 +1541,23 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
     if accion in ("op_camiones", "op_silos"):
-        desde = (ahora() - timedelta(days=2)).isoformat()
+        desde  = (ahora() - timedelta(days=2)).isoformat()
+        col_id = "camion_id" if accion == "op_camiones" else "silobolsa_id"
         if cont:
             filtro = {"contratista_id": cont["id"]}
         else:
-            op = get_usuario(uid)
+            op     = get_usuario(uid)
             filtro = {"operario_id": op["id"]} if op else {}
 
+        ids = set()
         if filtro:
-            q_cam  = supabase.table("descargas").select("camion_id").gte("created_at", desde)
-            q_silo = supabase.table("descargas").select("silobolsa_id").gte("created_at", desde)
+            q = supabase.table("descargas").select(col_id).gte("created_at", desde)
             for col, val in filtro.items():
-                q_cam  = q_cam.eq(col, val)
-                q_silo = q_silo.eq(col, val)
-            ids_cam  = {d["camion_id"]    for d in (q_cam.execute().data  or []) if d.get("camion_id")}
-            ids_silo = {d["silobolsa_id"] for d in (q_silo.execute().data or []) if d.get("silobolsa_id")}
-        else:
-            ids_cam = ids_silo = set()
+                q = q.eq(col, val)
+            ids = {d[col_id] for d in (q.execute().data or []) if d.get(col_id)}
 
         if accion == "op_camiones":
-            camiones = get_camiones_por_ids(ids_cam)
+            camiones = get_camiones_por_ids(ids)
             botones  = []
             for c in sorted(camiones, key=lambda x: x.get("cerrado", False)):
                 icono   = "🔒" if c.get("cerrado") else "🟢"
@@ -1555,8 +1568,7 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text(texto, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
             return ConversationHandler.END
 
-        # op_silos
-        silos   = get_silobolsas_por_ids(ids_silo)
+        silos   = get_silobolsas_por_ids(ids)
         botones = []
         for s in sorted(silos, key=lambda x: x.get("cerrado", False)):
             icono = "🔒" if s.get("cerrado") else "🟢"
@@ -1573,25 +1585,18 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("No se encontró el camión.")
             return ConversationHandler.END
         camion    = r.data[0]
-        acumulado = kg_acumulado_camion(camion_id)
         capacidad = camion.get("capacidad_kg")
         cerrado   = camion.get("cerrado", False)
+        r_desc    = (supabase.table("descargas")
+                     .select("kg,lotes(nombre,grano),campos(nombre),clientes(nombre,apellido)")
+                     .eq("camion_id", camion_id)
+                     .order("created_at", desc=True)
+                     .execute())
+        rows      = r_desc.data or []
+        acumulado = sum(float(d["kg"]) for d in rows)
+        ultimo    = rows[0] if rows else {}
         lineas    = [f"🚛 *{camion['patente_chasis']} / {camion['patente_acoplado']}*"]
-        # Contexto de la última descarga (cliente / campo / lote)
-        r_desc = (supabase.table("descargas")
-                  .select("lotes(nombre,grano), campos(nombre), clientes(nombre,apellido)")
-                  .eq("camion_id", camion_id)
-                  .order("created_at", desc=True)
-                  .limit(1)
-                  .execute())
-        if r_desc.data:
-            d = r_desc.data[0]
-            cli   = d.get("clientes") or {}
-            campo = d.get("campos")   or {}
-            lote  = d.get("lotes")    or {}
-            if cli:   lineas.append(f"Cliente: {cli.get('nombre','')} {cli.get('apellido','')}")
-            if campo: lineas.append(f"Campo:   {campo.get('nombre','')}")
-            if lote:  lineas.append(f"Lote:    {lote.get('nombre','')} ({lote.get('grano','')})")
+        lineas   += lineas_contexto(ultimo.get("clientes") or {}, ultimo.get("campos") or {}, ultimo.get("lotes") or {})
         lineas.append(f"Acumulado: *{acumulado:,.0f} kg*" + (f" / {capacidad:,.0f} kg" if capacidad else ""))
         if capacidad: lineas.append(barra(acumulado, capacidad))
         if capacidad and not cerrado:
@@ -1621,16 +1626,13 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
         acum    = kg_acumulado_silo(silo_id)
         cerrado = silo.get("cerrado", False)
         lineas  = [f"🌾 *Silobolsa #{silo['numero']}*"]
-        if cli:   lineas.append(f"Cliente: {cli.get('nombre','')} {cli.get('apellido','')}")
-        if campo: lineas.append(f"Campo:   {campo.get('nombre','')}")
-        if lote:  lineas.append(f"Lote:    {lote.get('nombre','')} ({lote.get('grano','')})")
+        lineas += lineas_contexto(cli, campo, lote)
         lineas.append(f"Acumulado: *{acum:,.0f} kg*")
         if cerrado: lineas.append("Estado: 🔒 Cerrado")
         botones = []
         if cerrado:
             botones.append([InlineKeyboardButton("🔓 Reabrir", callback_data=f"silo_reabrir_{silo_id}")])
         else:
-            botones.append([InlineKeyboardButton("📦 Agregar descarga", callback_data=f"silo_forzar_desc_{silo_id}")])
             botones.append([InlineKeyboardButton("🔒 Cerrar silobolsa", callback_data=f"silo_cerrar_{silo_id}")])
         botones.append([btn_cancelar("op_silos")])
         await query.edit_message_text("\n".join(lineas), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(botones))
