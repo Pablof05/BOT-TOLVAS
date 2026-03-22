@@ -1226,7 +1226,7 @@ async def desc_elegir_destino(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def desc_camion_chasis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patente = parsear_patente(update.message.text)
-    r       = supabase.table("camiones").select("*").eq("patente_chasis", patente).execute()
+    r       = supabase.table("camiones").select("id,patente_chasis,patente_acoplado,capacidad_kg,cerrado").eq("patente_chasis", patente).execute()
     if r.data:
         camion = r.data[0]
         context.user_data["desc_chasis_tmp"] = patente
@@ -1253,6 +1253,8 @@ async def desc_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer()
         if query.data == "desc_acoplado_ok":
             camion = context.user_data["desc_camion_tmp"]
+            if camion.get("cerrado"):
+                supabase.table("camiones").update({"cerrado": False}).eq("id", camion["id"]).execute()
             context.user_data["desc_destino_id"]  = camion["id"]
             context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
             context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
@@ -1274,88 +1276,63 @@ async def desc_camion_capacidad(update: Update, context: ContextTypes.DEFAULT_TY
     except ValueError:
         cap = 0
 
-    # Si es 0 o no ingresó nada → default 30000
+    chasis         = context.user_data["desc_chasis_tmp"]
+    acoplado       = context.user_data["desc_acoplado_tmp"]
+    contratista_id = context.user_data["contratista_id"]
+
     if cap == 0:
-        cap = 30000
-        context.user_data["desc_cap_tmp"] = cap
-        await _guardar_camion_y_continuar(update, context, cap)
+        cap       = 30000
+        camion_id = _upsert_camion(chasis, acoplado, cap, contratista_id)
+        context.user_data["desc_destino_id"]  = camion_id
+        context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
+        context.user_data["desc_capacidad"]   = cap
         await update.message.reply_text(
-            f"No ingresaste capacidad, se asignaron *30.000 kg* por defecto.\n\n¿Cuántos kg descargaste?",
+            "No ingresaste capacidad, se asignaron *30.000 kg* por defecto.\n\n¿Cuántos kg descargaste?",
             parse_mode="Markdown"
         )
         return DESC_KG
 
-    # Rango normal entre 25000 y 40000
     if 25000 <= cap <= 40000:
-        await _guardar_camion_y_continuar(update, context, cap)
+        camion_id = _upsert_camion(chasis, acoplado, cap, contratista_id)
+        context.user_data["desc_destino_id"]  = camion_id
+        context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
+        context.user_data["desc_capacidad"]   = cap
+        await update.message.reply_text(
+            f"🚛 *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg descargaste?",
+            parse_mode="Markdown"
+        )
         return DESC_KG
 
-    # Fuera de rango → preguntar si es correcto
     context.user_data["desc_cap_tmp"] = cap
-    teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Sí, es correcto", callback_data="cap_ok")],
-        [InlineKeyboardButton("✏️ Corregir",        callback_data="cap_corregir")],
-        [btn_cancelar()]
-    ])
     await update.message.reply_text(
         f"Ingresaste *{cap:,.0f} kg* — eso parece inusual para un camión.\n¿Es correcto?",
         parse_mode="Markdown",
-        reply_markup=teclado
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Sí, es correcto", callback_data="cap_ok")],
+            [InlineKeyboardButton("✏️ Corregir",        callback_data="cap_corregir")],
+            [btn_cancelar()]
+        ])
     )
     return DESC_CAMION_CAPACIDAD
-
-async def _guardar_camion_y_continuar(update, context, cap):
-    chasis         = context.user_data["desc_chasis_tmp"]
-    acoplado       = context.user_data["desc_acoplado_tmp"]
-    contratista_id = context.user_data["contratista_id"]
-    r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
-    if r.data:
-        camion_id = r.data[0]["id"]
-        supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
-    else:
-        nuevo     = supabase.table("camiones").insert({
-            "patente_chasis": chasis, "patente_acoplado": acoplado,
-            "capacidad_kg":   cap, "contratista_id": contratista_id
-        }).execute()
-        camion_id = nuevo.data[0]["id"]
-    context.user_data["desc_destino_id"]  = camion_id
-    context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
-    context.user_data["desc_capacidad"]   = cap
-    await update.message.reply_text(
-        f"🚛 Camión *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg?",
-        parse_mode="Markdown"
-    )
 
 async def desc_confirmar_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "cap_corregir":
-        await query.edit_message_text(
-            "¿Cuál es la capacidad correcta en kg? (ej: 30000)"
-        )
+        await query.edit_message_text("¿Cuál es la capacidad correcta en kg? (ej: 30000)")
         return DESC_CAMION_CAPACIDAD
 
-    # Confirma la capacidad inusual
-    cap = context.user_data["desc_cap_tmp"]
+    cap            = context.user_data["desc_cap_tmp"]
     chasis         = context.user_data["desc_chasis_tmp"]
     acoplado       = context.user_data["desc_acoplado_tmp"]
     contratista_id = context.user_data["contratista_id"]
-    r = supabase.table("camiones").select("*").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
-    if r.data:
-        camion_id = r.data[0]["id"]
-        supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
-    else:
-        nuevo     = supabase.table("camiones").insert({
-            "patente_chasis": chasis, "patente_acoplado": acoplado,
-            "capacidad_kg":   cap, "contratista_id": contratista_id
-        }).execute()
-        camion_id = nuevo.data[0]["id"]
+    camion_id      = _upsert_camion(chasis, acoplado, cap, contratista_id)
     context.user_data["desc_destino_id"]  = camion_id
     context.user_data["desc_destino_str"] = f"{chasis} / {acoplado}"
     context.user_data["desc_capacidad"]   = cap
     await query.edit_message_text(
-        f"🚛 Camión *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg?",
+        f"🚛 *{chasis} / {acoplado}* listo.\n\n¿Cuántos kg descargaste?",
         parse_mode="Markdown"
     )
     return DESC_KG
