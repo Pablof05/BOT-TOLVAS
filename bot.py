@@ -1704,6 +1704,17 @@ async def menu_operario_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     return ConversationHandler.END
 
+async def desc_input_inesperado_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responde cuando el usuario envía texto en un estado que espera botones."""
+    await update.message.reply_text(
+        "Por favor usá los botones para continuar.\n"
+        "Si querés cancelar, tocá el botón ❌ Cancelar o escribí /start."
+    )
+
+async def desc_input_inesperado_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responde cuando se recibe un callback inesperado en el flujo de descarga."""
+    await update.callback_query.answer("Esta opción no es válida aquí.")
+
 async def cam_recibir_nueva_capacidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.strip().replace('.','').replace(',','.')
     try:
@@ -1787,19 +1798,24 @@ if __name__ == "__main__":
             CallbackQueryHandler(iniciar_descarga, pattern="^op_descarga$"),
         ],
         states={
-            DESC_CLIENTE:       [CallbackQueryHandler(desc_elegir_cliente,  pattern="^desc_cli_|^desc_nuevo_cliente$")],
+            DESC_CLIENTE:       [CallbackQueryHandler(desc_elegir_cliente,  pattern="^desc_cli_|^desc_nuevo_cliente$"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto)],
             NUEVO_CLIENTE_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_cliente_nombre)],
-            DESC_CAMPO:         [CallbackQueryHandler(desc_elegir_campo,    pattern="^desc_campo_|^desc_nuevo_campo$")],
+            DESC_CAMPO:         [CallbackQueryHandler(desc_elegir_campo,    pattern="^desc_campo_|^desc_nuevo_campo$"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto)],
             NUEVO_CAMPO_NOMBRE: [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_campo_nombre)],
             DESC_LOTE:          [CallbackQueryHandler(desc_elegir_lote,     pattern="^desc_lote_|^desc_nuevo_lote$"),
-                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_")],
+                                 CallbackQueryHandler(desc_elegir_grano,    pattern="^desc_grano_"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto)],
             NUEVO_LOTE_NOMBRE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_nuevo_lote_nombre),
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
             DESC_GRANO_OTRO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_grano_otro),
                                  CallbackQueryHandler(desc_elegir_grano, pattern="^desc_grano_")],
-            DESC_SESION_CONFIRMAR: [CallbackQueryHandler(desc_sesion_confirmar, pattern="^desc_confirmar_sesion$|^desc_cambiar_cliente$|^desc_cambiar_campo$|^desc_cambiar_lote$|^op_cancelar$")],
+            DESC_SESION_CONFIRMAR: [CallbackQueryHandler(desc_sesion_confirmar, pattern="^desc_confirmar_sesion$|^desc_cambiar_cliente$|^desc_cambiar_campo$|^desc_cambiar_lote$|^op_cancelar$"),
+                                    MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto)],
             DESC_TIPO_DESTINO:  [CallbackQueryHandler(desc_tipo_destino,    pattern="^desc_tipo_"),
-                                 CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$")],
+                                 CallbackQueryHandler(desc_elegir_destino,  pattern="^desc_cam_|^desc_silo_|^desc_nuevo_camion$|^desc_nuevo_silo$"),
+                                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto)],
             DESC_CAMION_CHASIS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_chasis)],
             DESC_CAMION_ACOPLADO: [CallbackQueryHandler(desc_camion_acoplado, pattern="^desc_acoplado_"),
                                    MessageHandler(filters.TEXT & ~filters.COMMAND, desc_camion_acoplado)],
@@ -1812,7 +1828,9 @@ if __name__ == "__main__":
         },
         fallbacks=[
             CallbackQueryHandler(menu_operario_callback, pattern="^op_cancelar$"),
-            CommandHandler("start", cmd_start)
+            CommandHandler("start", cmd_start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, desc_input_inesperado_texto),
+            CallbackQueryHandler(desc_input_inesperado_callback),
         ],
         per_message=False
     )
