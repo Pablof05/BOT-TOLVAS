@@ -144,8 +144,10 @@ def get_silobolsas_por_ids(ids: set) -> list:
     return result
 
 def _upsert_camion(chasis: str, acoplado: str, cap: float, contratista_id: int) -> int:
-    """Crea o actualiza el camión (sin reabrir). Retorna el camion_id."""
-    r = supabase.table("camiones").select("id").eq("patente_chasis", chasis).eq("patente_acoplado", acoplado).execute()
+    """Reutiliza el camión abierto con esas patentes, o crea uno nuevo. Retorna el camion_id."""
+    r = (supabase.table("camiones").select("id")
+         .eq("patente_chasis", chasis).eq("patente_acoplado", acoplado)
+         .eq("cerrado", False).execute())
     if r.data:
         camion_id = r.data[0]["id"]
         supabase.table("camiones").update({"capacidad_kg": cap}).eq("id", camion_id).execute()
@@ -1345,11 +1347,22 @@ async def desc_camion_acoplado(update: Update, context: ContextTypes.DEFAULT_TYP
     if query:
         await query.answer()
         if query.data == "desc_acoplado_ok":
-            camion = context.user_data["desc_camion_tmp"]
-            context.user_data["desc_destino_id"]  = camion["id"]
+            camion         = context.user_data["desc_camion_tmp"]
+            contratista_id = context.user_data["contratista_id"]
+            if camion.get("cerrado"):
+                # El camión existente está cerrado → abrir uno nuevo con las mismas patentes
+                camion_id = supabase.table("camiones").insert({
+                    "patente_chasis":  camion["patente_chasis"],
+                    "patente_acoplado": camion["patente_acoplado"],
+                    "capacidad_kg":    camion.get("capacidad_kg"),
+                    "contratista_id":  contratista_id,
+                }).execute().data[0]["id"]
+            else:
+                camion_id = camion["id"]
+            context.user_data["desc_destino_id"]  = camion_id
             context.user_data["desc_destino_str"] = f"{camion['patente_chasis']} / {camion['patente_acoplado']}"
             context.user_data["desc_capacidad"]   = camion.get("capacidad_kg")
-            return await mostrar_sesion_o_clientes(query.edit_message_text, context, context.user_data["contratista_id"])
+            return await mostrar_sesion_o_clientes(query.edit_message_text, context, contratista_id)
         else:
             await query.edit_message_text("¿Patente del acoplado?")
             return DESC_CAMION_ACOPLADO
