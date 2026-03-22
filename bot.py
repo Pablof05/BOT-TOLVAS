@@ -1230,13 +1230,16 @@ async def _guardar_sesion(context, chat_id=None):
     if not all([cid, cli, cam, lot]):
         logging.warning("_guardar_sesion: faltan datos contratista=%s cliente=%s campo=%s lote=%s", cid, cli, cam, lot)
         return
-    supabase.table("sesion_activa").upsert({
+    row = {
         "contratista_id": cid,
         "cliente_id":     cli,
         "campo_id":       cam,
         "lote_id":        lot,
         "iniciada_at":    ahora().isoformat()
-    }).execute()
+    }
+    if chat_id:
+        row["chat_id"] = chat_id
+    supabase.table("sesion_activa").upsert(row).execute()
 
 async def mostrar_tipo_destino(query, context):
     botones = [
